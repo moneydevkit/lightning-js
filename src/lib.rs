@@ -3,12 +3,16 @@
 use std::str::FromStr;
 
 use ldk_node::{
-  bip39::Mnemonic, bitcoin::{secp256k1::PublicKey, Network}, generate_entropy_mnemonic, lightning::ln::msgs::SocketAddress, lightning_invoice::{Bolt11InvoiceDescription, Description}, Builder, Node
+  bip39::Mnemonic,
+  bitcoin::{secp256k1::PublicKey, Network},
+  generate_entropy_mnemonic,
+  lightning::ln::msgs::SocketAddress,
+  lightning_invoice::{Bolt11InvoiceDescription, Description},
+  Builder, Node,
 };
 
 #[macro_use]
 extern crate napi_derive;
-
 
 #[napi]
 pub fn generate_mnemonic() -> String {
@@ -62,17 +66,26 @@ impl MdkNode {
     builder.set_entropy_bip39_mnemonic(mnemonic, None);
     builder.set_log_facade_logger();
     builder.set_liquidity_source_lsps2(lsp_node_id, lsp_address, options.lsp_token);
-    
+
     let node = builder.build().unwrap();
-  
+
     Self { node }
   }
 
   #[napi]
   pub fn get_invoice(&self, amount: i64, description: String, expiry_secs: i64) -> PaymentMetadata {
-    let bolt11_invoice_description = Bolt11InvoiceDescription::Direct(Description::new(description).unwrap());
-    let bolt11 = self.node.bolt11_payment().receive(amount as u64, &bolt11_invoice_description, expiry_secs as u32).unwrap();
-    
+    let bolt11_invoice_description =
+      Bolt11InvoiceDescription::Direct(Description::new(description).unwrap());
+    let bolt11 = self
+      .node
+      .bolt11_payment()
+      .receive(
+        amount as u64,
+        &bolt11_invoice_description,
+        expiry_secs as u32,
+      )
+      .unwrap();
+
     PaymentMetadata {
       bolt11: bolt11.to_string(),
       payment_hash: bolt11.payment_hash().to_string(),
@@ -81,9 +94,18 @@ impl MdkNode {
   }
 
   #[napi]
-  pub fn get_variable_amount_invoice(&self, description: String, expiry_secs: i64) -> PaymentMetadata {
-    let bolt11_invoice_description = Bolt11InvoiceDescription::Direct(Description::new(description).unwrap());
-    let bolt11 = self.node.bolt11_payment().receive_variable_amount(&bolt11_invoice_description, expiry_secs as u32).unwrap();
+  pub fn get_variable_amount_invoice(
+    &self,
+    description: String,
+    expiry_secs: i64,
+  ) -> PaymentMetadata {
+    let bolt11_invoice_description =
+      Bolt11InvoiceDescription::Direct(Description::new(description).unwrap());
+    let bolt11 = self
+      .node
+      .bolt11_payment()
+      .receive_variable_amount(&bolt11_invoice_description, expiry_secs as u32)
+      .unwrap();
 
     PaymentMetadata {
       bolt11: bolt11.to_string(),
@@ -91,5 +113,4 @@ impl MdkNode {
       expires_at: bolt11.expires_at().unwrap().as_secs() as i64,
     }
   }
-
 }
