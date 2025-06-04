@@ -1,18 +1,19 @@
 {
-  "name": "moneydevkit-win32-x64-msvc",
-  "version": "0.0.0",
+  "name": "@moneydevkit/lightning-js-win32-x64-msvc",
+  "version": "0.1.0",
   "os": [
     "win32"
   ],
   "cpu": [
     "x64"
   ],
-  "main": "moneydevkit.win32-x64-msvc.node",
+  "main": "lightning-js.win32-x64-msvc.node",
   "files": [
-    "moneydevkit.win32-x64-msvc.node"
+    "lightning-js.win32-x64-msvc.node"
   ],
   "license": "MIT",
   "engines": {
     "node": ">= 10"
-  }
+  },
+  "repository": "https://github.com/moneydevkit/lightning-js"
 }

@@ -4,7 +4,7 @@
   "main": "index.js",
   "types": "index.d.ts",
   "napi": {
-    "name": "@moneydevkit/lightning-js",
+    "name": "lightning-js",
     "triples": {
       "additional": [
         "aarch64-apple-darwin",
@@ -43,5 +43,6 @@
     "universal": "napi universal",
     "version": "napi version"
   },
-  "packageManager": "yarn@4.9.1"
+  "packageManager": "yarn@4.9.1",
+  "repository": "https://github.com/moneydevkit/lightning-js"
 }

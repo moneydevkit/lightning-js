@@ -1,3 +1,3 @@
-# `moneydevkit-darwin-x64`
+# `@moneydevkit/lightning-js-darwin-x64`
 
-This is the **x86_64-apple-darwin** binary for `moneydevkit`
+This is the **x86_64-apple-darwin** binary for `@moneydevkit/lightning-js`

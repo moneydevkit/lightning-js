@@ -1,18 +1,19 @@
 {
-  "name": "moneydevkit-android-arm-eabi",
-  "version": "0.0.0",
+  "name": "@moneydevkit/lightning-js-android-arm-eabi",
+  "version": "0.1.0",
   "os": [
     "android"
   ],
   "cpu": [
     "arm"
   ],
-  "main": "moneydevkit.android-arm-eabi.node",
+  "main": "lightning-js.android-arm-eabi.node",
   "files": [
-    "moneydevkit.android-arm-eabi.node"
+    "lightning-js.android-arm-eabi.node"
   ],
   "license": "MIT",
   "engines": {
     "node": ">= 10"
-  }
+  },
+  "repository": "https://github.com/moneydevkit/lightning-js"
 }

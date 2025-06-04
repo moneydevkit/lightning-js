@@ -1,18 +1,19 @@
 {
-  "name": "moneydevkit-freebsd-x64",
-  "version": "0.0.0",
+  "name": "@moneydevkit/lightning-js-freebsd-x64",
+  "version": "0.1.0",
   "os": [
     "freebsd"
   ],
   "cpu": [
     "x64"
   ],
-  "main": "moneydevkit.freebsd-x64.node",
+  "main": "lightning-js.freebsd-x64.node",
   "files": [
-    "moneydevkit.freebsd-x64.node"
+    "lightning-js.freebsd-x64.node"
   ],
   "license": "MIT",
   "engines": {
     "node": ">= 10"
-  }
+  },
+  "repository": "https://github.com/moneydevkit/lightning-js"
 }

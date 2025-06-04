@@ -1,3 +1,3 @@
-# `moneydevkit-linux-x64-musl`
+# `@moneydevkit/lightning-js-linux-x64-musl`
 
-This is the **x86_64-unknown-linux-musl** binary for `moneydevkit`
+This is the **x86_64-unknown-linux-musl** binary for `@moneydevkit/lightning-js`

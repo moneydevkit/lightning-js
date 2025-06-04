@@ -1,15 +1,16 @@
 {
-  "name": "moneydevkit-darwin-universal",
-  "version": "0.0.0",
+  "name": "@moneydevkit/lightning-js-darwin-universal",
+  "version": "0.1.0",
   "os": [
     "darwin"
   ],
-  "main": "moneydevkit.darwin-universal.node",
+  "main": "lightning-js.darwin-universal.node",
   "files": [
-    "moneydevkit.darwin-universal.node"
+    "lightning-js.darwin-universal.node"
   ],
   "license": "MIT",
   "engines": {
     "node": ">= 10"
-  }
+  },
+  "repository": "https://github.com/moneydevkit/lightning-js"
 }

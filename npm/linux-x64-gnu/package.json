@@ -1,20 +1,21 @@
 {
-  "name": "moneydevkit-linux-x64-gnu",
-  "version": "0.0.0",
+  "name": "@moneydevkit/lightning-js-linux-x64-gnu",
+  "version": "0.1.0",
   "os": [
     "linux"
   ],
   "cpu": [
     "x64"
   ],
-  "main": "moneydevkit.linux-x64-gnu.node",
+  "main": "lightning-js.linux-x64-gnu.node",
   "files": [
-    "moneydevkit.linux-x64-gnu.node"
+    "lightning-js.linux-x64-gnu.node"
   ],
   "license": "MIT",
   "engines": {
     "node": ">= 10"
   },
+  "repository": "https://github.com/moneydevkit/lightning-js",
   "libc": [
     "glibc"
   ]

@@ -1,18 +1,19 @@
 {
-  "name": "moneydevkit-linux-arm-gnueabihf",
-  "version": "0.0.0",
+  "name": "@moneydevkit/lightning-js-linux-arm-gnueabihf",
+  "version": "0.1.0",
   "os": [
     "linux"
   ],
   "cpu": [
     "arm"
   ],
-  "main": "moneydevkit.linux-arm-gnueabihf.node",
+  "main": "lightning-js.linux-arm-gnueabihf.node",
   "files": [
-    "moneydevkit.linux-arm-gnueabihf.node"
+    "lightning-js.linux-arm-gnueabihf.node"
   ],
   "license": "MIT",
   "engines": {
     "node": ">= 10"
-  }
+  },
+  "repository": "https://github.com/moneydevkit/lightning-js"
 }

@@ -1,3 +1,3 @@
-# `moneydevkit-linux-arm64-gnu`
+# `@moneydevkit/lightning-js-linux-arm64-gnu`
 
-This is the **aarch64-unknown-linux-gnu** binary for `moneydevkit`
+This is the **aarch64-unknown-linux-gnu** binary for `@moneydevkit/lightning-js`
