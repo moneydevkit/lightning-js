@@ -7,7 +7,7 @@ version = "0.1.0"
 crate-type = ["cdylib"]
 
 [dependencies]
-ldk-node    = { default-features = false, git = "https://github.com/moneydevkit/ldk-node.git", branch = "electrum-feature" }
+ldk-node    = { default-features = false, git = "https://github.com/moneydevkit/ldk-node.git", rev = "b273e97072a678e0349c03b94510e32f14adb49e" }
 napi        = "2"
 napi-derive = "2"
 

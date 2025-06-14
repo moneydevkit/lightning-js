@@ -18,8 +18,14 @@ export interface PaymentMetadata {
   paymentHash: string
   expiresAt: number
 }
+export interface ReceivedPayment {
+  paymentHash: string
+  amount: number
+}
 export declare class MdkNode {
   constructor(options: MdkNodeOptions)
+  getNodeId(): string
+  receivePayment(minThresholdMs: number, quietThresholdMs: number): Array<ReceivedPayment>
   getInvoice(amount: number, description: string, expirySecs: number): PaymentMetadata
   getVariableAmountInvoice(description: string, expirySecs: number): PaymentMetadata
 }

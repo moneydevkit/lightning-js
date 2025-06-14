@@ -8,7 +8,7 @@ use ldk_node::{
   generate_entropy_mnemonic,
   lightning::ln::msgs::SocketAddress,
   lightning_invoice::{Bolt11InvoiceDescription, Description},
-  Builder, Node,
+  Builder, Event, Node,
 };
 
 #[macro_use]
@@ -35,6 +35,12 @@ pub struct PaymentMetadata {
   pub bolt11: String,
   pub payment_hash: String,
   pub expires_at: i64,
+}
+
+#[napi(object)]
+pub struct ReceivedPayment {
+  pub payment_hash: String,
+  pub amount: i64,
 }
 
 #[napi]
@@ -70,6 +76,61 @@ impl MdkNode {
     let node = builder.build().unwrap();
 
     Self { node }
+  }
+
+  #[napi]
+  pub fn get_node_id(&self) -> String {
+    self.node.node_id().to_string()
+  }
+
+  #[napi]
+  pub fn receive_payment(
+    &self,
+    min_threshold_ms: i64,
+    quiet_threshold_ms: i64,
+  ) -> Vec<ReceivedPayment> {
+    let mut received_payments = vec![];
+
+    if self.node.start().is_err() {
+      return received_payments;
+    }
+
+    let start_sync_at = std::time::Instant::now();
+    let mut last_event_time = start_sync_at;
+
+    loop {
+      let now = std::time::Instant::now();
+
+      let total_time_elapsed = now.duration_since(start_sync_at).as_millis() as i64;
+      let quiet_time_elapsed = now.duration_since(last_event_time).as_millis() as i64;
+
+      if total_time_elapsed >= min_threshold_ms && quiet_time_elapsed >= quiet_threshold_ms {
+        break;
+      }
+
+      if let Some(event) = self.node.next_event() {
+        if let Event::PaymentReceived {
+          payment_hash,
+          amount_msat,
+          ..
+        } = event
+        {
+          received_payments.push(ReceivedPayment {
+            payment_hash: payment_hash.to_string(),
+            amount: amount_msat as i64,
+          });
+        }
+
+        let _ = self.node.event_handled();
+        last_event_time = now;
+      }
+
+      std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    let _ = self.node.stop();
+
+    received_payments
   }
 
   #[napi]
