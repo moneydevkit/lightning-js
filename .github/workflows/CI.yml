@@ -120,6 +120,9 @@ jobs:
         with:
           node-version: 22
           cache: yarn
+      - name: Install NASM
+        if: runner.os == 'Windows'
+        run: choco install nasm
       - name: Install
         uses: dtolnay/rust-toolchain@stable
         if: ${{ !matrix.settings.docker }}
