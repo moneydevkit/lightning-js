@@ -92,6 +92,12 @@ jobs:
               yarn build --target aarch64-unknown-linux-gnu
           - host: ubuntu-latest
             target: armv7-unknown-linux-gnueabihf
+            setup: |
+              set -e
+              sudo apt-get update
+              sudo apt-get install -y gcc-arm-linux-gnueabihf
+              echo "CC_armv7_unknown_linux_gnueabihf=arm-linux-gnueabihf-gcc" >> $GITHUB_ENV
+              echo "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc" >> $GITHUB_ENV
             build: yarn build --target armv7-unknown-linux-gnueabihf
           - host: ubuntu-latest
             target: aarch64-linux-android
@@ -156,10 +162,6 @@ jobs:
         with:
           node-version: 22
           cache: yarn
-      - name: Setup Zig
-        uses: goto-bus-stop/setup-zig@v2
-        with:
-          version: 0.11.0
       - name: Install NASM
         if: runner.os == 'Windows'
         run: choco install nasm
