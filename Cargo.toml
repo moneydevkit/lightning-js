@@ -7,7 +7,7 @@ version = "0.1.0"
 crate-type = ["cdylib"]
 
 [dependencies]
-ldk-node    = { default-features = false, git = "https://github.com/moneydevkit/ldk-node.git", rev = "b273e97072a678e0349c03b94510e32f14adb49e" }
+ldk-node    = { default-features = false, git = "https://github.com/moneydevkit/ldk-node.git", rev = "13a374606e2149741afd605c1ef6d5c8a3d6e551" }
 napi        = "2"
 napi-derive = "2"
 
