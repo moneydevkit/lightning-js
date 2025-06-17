@@ -147,7 +147,9 @@ impl MdkNode {
       .unwrap_or(0) as i64;
 
     let bolt11 = if amount >= max_receive_msat {
-      self
+      self.node.start().unwrap();
+
+      let invoice = self
         .node
         .bolt11_payment()
         .receive_via_jit_channel(
@@ -156,7 +158,11 @@ impl MdkNode {
           expiry_secs as u32,
           None,
         )
-        .unwrap()
+        .unwrap();
+
+      let _ = self.node.stop();
+
+      invoice
     } else {
       self
         .node
