@@ -137,15 +137,37 @@ impl MdkNode {
   pub fn get_invoice(&self, amount: i64, description: String, expiry_secs: i64) -> PaymentMetadata {
     let bolt11_invoice_description =
       Bolt11InvoiceDescription::Direct(Description::new(description).unwrap());
-    let bolt11 = self
+
+    let max_receive_msat = self
       .node
-      .bolt11_payment()
-      .receive(
-        amount as u64,
-        &bolt11_invoice_description,
-        expiry_secs as u32,
-      )
-      .unwrap();
+      .list_channels()
+      .iter()
+      .map(|c| c.inbound_capacity_msat)
+      .max()
+      .unwrap_or(0) as i64;
+
+    let bolt11 = if amount >= max_receive_msat {
+      self
+        .node
+        .bolt11_payment()
+        .receive_via_jit_channel(
+          amount as u64,
+          &bolt11_invoice_description,
+          expiry_secs as u32,
+          None,
+        )
+        .unwrap()
+    } else {
+      self
+        .node
+        .bolt11_payment()
+        .receive(
+          amount as u64,
+          &bolt11_invoice_description,
+          expiry_secs as u32,
+        )
+        .unwrap()
+    };
 
     PaymentMetadata {
       bolt11: bolt11.to_string(),

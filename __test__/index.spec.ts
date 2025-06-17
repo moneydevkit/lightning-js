@@ -12,7 +12,7 @@ test('can generate an invoice', (t) => {
     lspAddress: '45.79.52.207:9735',
   })
 
-  const invoice = mdkNode.getInvoice(1000, 'test invoice', 15 * 60)
+  const invoice = mdkNode.getVariableAmountInvoice('test invoice', 15 * 60)
 
   t.is(invoice.bolt11.startsWith('lntbs'), true)
 })
