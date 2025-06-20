@@ -182,7 +182,7 @@ impl MdkNode {
   }
 
   #[napi]
-  pub fn get_variable_amount_invoice(
+  pub fn get_variable_amount_jit_invoice(
     &self,
     description: String,
     expiry_secs: i64,
@@ -192,7 +192,33 @@ impl MdkNode {
     let bolt11 = self
       .node
       .bolt11_payment()
-      .receive_variable_amount(&bolt11_invoice_description, expiry_secs as u32)
+      .receive_via_lsps4_jit_channel(None, &bolt11_invoice_description, expiry_secs as u32)
+      .unwrap();
+
+    invoice_to_payment_metadata(bolt11)
+  }
+
+  #[napi]
+  pub fn get_variable_amount_jit_invoice_with_scid(
+    &self,
+    human_readable_scid: String,
+    description: String,
+    expiry_secs: i64,
+  ) -> PaymentMetadata {
+    let bolt11_invoice_description =
+      Bolt11InvoiceDescription::Direct(Description::new(description).unwrap());
+
+    let scid = scid_from_human_readable_string(&human_readable_scid).unwrap();
+
+    let bolt11 = self
+      .node
+      .bolt11_payment()
+      .receive_via_lsps4_jit_channel_with_scid(
+        scid,
+        None,
+        &bolt11_invoice_description,
+        expiry_secs as u32,
+      )
       .unwrap();
 
     invoice_to_payment_metadata(bolt11)

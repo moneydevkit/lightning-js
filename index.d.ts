@@ -27,6 +27,16 @@ export declare class MdkNode {
   getNodeId(): string
   receivePayment(minThresholdMs: number, quietThresholdMs: number): Array<ReceivedPayment>
   getInvoice(amount: number, description: string, expirySecs: number): PaymentMetadata
-  getInvoiceWithScid(humanReadableScid: string, amount: number, description: string, expirySecs: number): PaymentMetadata
-  getVariableAmountInvoice(description: string, expirySecs: number): PaymentMetadata
+  getInvoiceWithScid(
+    humanReadableScid: string,
+    amount: number,
+    description: string,
+    expirySecs: number,
+  ): PaymentMetadata
+  getVariableAmountJitInvoice(description: string, expirySecs: number): PaymentMetadata
+  getVariableAmountJitInvoiceWithScid(
+    humanReadableScid: string,
+    description: string,
+    expirySecs: number,
+  ): PaymentMetadata
 }
