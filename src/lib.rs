@@ -84,6 +84,21 @@ impl MdkNode {
   }
 
   #[napi]
+  pub fn start(&self) {
+    self.node.start().unwrap();
+  }
+
+  #[napi]
+  pub fn stop(&self) {
+    self.node.stop().unwrap();
+  }
+
+  #[napi]
+  pub fn sync_wallets(&self) {
+    self.node.sync_wallets().unwrap();
+  }
+
+  #[napi]
   pub fn receive_payment(
     &self,
     min_threshold_ms: i64,

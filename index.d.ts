@@ -25,6 +25,9 @@ export interface ReceivedPayment {
 export declare class MdkNode {
   constructor(options: MdkNodeOptions)
   getNodeId(): string
+  start(): void
+  stop(): void
+  syncWallets(): void
   receivePayment(minThresholdMs: number, quietThresholdMs: number): Array<ReceivedPayment>
   getInvoice(amount: number, description: string, expirySecs: number): PaymentMetadata
   getInvoiceWithScid(
