@@ -7,7 +7,8 @@ use ldk_node::{
   bitcoin::{secp256k1::PublicKey, Network},
   generate_entropy_mnemonic,
   lightning::ln::msgs::SocketAddress,
-  lightning_invoice::{Bolt11InvoiceDescription, Description},
+  lightning::util::scid_utils,
+  lightning_invoice::{Bolt11Invoice, Bolt11InvoiceDescription, Description},
   Builder, Event, Node,
 };
 
@@ -27,7 +28,6 @@ pub struct MdkNodeOptions {
   pub mnemonic: String,
   pub lsp_node_id: String,
   pub lsp_address: String,
-  pub lsp_token: Option<String>,
 }
 
 #[napi(object)]
@@ -35,6 +35,7 @@ pub struct PaymentMetadata {
   pub bolt11: String,
   pub payment_hash: String,
   pub expires_at: i64,
+  pub scid: String,
 }
 
 #[napi(object)]
@@ -61,7 +62,6 @@ impl MdkNode {
     };
 
     let mnemonic = Mnemonic::from_str(&options.mnemonic).unwrap();
-
     let lsp_node_id = PublicKey::from_str(&options.lsp_node_id).unwrap();
     let lsp_address = SocketAddress::from_str(&options.lsp_address).unwrap();
 
@@ -71,7 +71,7 @@ impl MdkNode {
     builder.set_gossip_source_rgs(options.rgs_url);
     builder.set_entropy_bip39_mnemonic(mnemonic, None);
     builder.set_log_facade_logger();
-    builder.set_liquidity_source_lsps2(lsp_node_id, lsp_address, options.lsp_token);
+    builder.set_liquidity_source_lsps4(lsp_node_id, lsp_address);
 
     let node = builder.build().unwrap();
 
@@ -137,49 +137,48 @@ impl MdkNode {
   pub fn get_invoice(&self, amount: i64, description: String, expiry_secs: i64) -> PaymentMetadata {
     let bolt11_invoice_description =
       Bolt11InvoiceDescription::Direct(Description::new(description).unwrap());
+    self.node.start().unwrap();
 
-    let max_receive_msat = self
+    let invoice = self
       .node
-      .list_channels()
-      .iter()
-      .map(|c| c.inbound_capacity_msat)
-      .max()
-      .unwrap_or(0) as i64;
+      .bolt11_payment()
+      .receive_via_lsps4_jit_channel(
+        Some(amount as u64),
+        &bolt11_invoice_description,
+        expiry_secs as u32,
+      )
+      .unwrap();
 
-    let bolt11 = if amount >= max_receive_msat {
-      self.node.start().unwrap();
+    let _ = self.node.stop();
 
-      let invoice = self
-        .node
-        .bolt11_payment()
-        .receive_via_jit_channel(
-          amount as u64,
-          &bolt11_invoice_description,
-          expiry_secs as u32,
-          None,
-        )
-        .unwrap();
+    invoice_to_payment_metadata(invoice)
+  }
 
-      let _ = self.node.stop();
+  #[napi]
+  pub fn get_invoice_with_scid(
+    &self,
+    human_readable_scid: String,
+    amount: i64,
+    description: String,
+    expiry_secs: i64,
+  ) -> PaymentMetadata {
+    let bolt11_invoice_description =
+      Bolt11InvoiceDescription::Direct(Description::new(description).unwrap());
 
-      invoice
-    } else {
-      self
-        .node
-        .bolt11_payment()
-        .receive(
-          amount as u64,
-          &bolt11_invoice_description,
-          expiry_secs as u32,
-        )
-        .unwrap()
-    };
+    let scid = scid_from_human_readable_string(&human_readable_scid).unwrap();
 
-    PaymentMetadata {
-      bolt11: bolt11.to_string(),
-      payment_hash: bolt11.payment_hash().to_string(),
-      expires_at: bolt11.expires_at().unwrap().as_secs() as i64,
-    }
+    let bolt11 = self
+      .node
+      .bolt11_payment()
+      .receive_via_lsps4_jit_channel_with_scid(
+        scid,
+        Some(amount as u64),
+        &bolt11_invoice_description,
+        expiry_secs as u32,
+      )
+      .unwrap();
+
+    invoice_to_payment_metadata(bolt11)
   }
 
   #[napi]
@@ -196,10 +195,36 @@ impl MdkNode {
       .receive_variable_amount(&bolt11_invoice_description, expiry_secs as u32)
       .unwrap();
 
-    PaymentMetadata {
-      bolt11: bolt11.to_string(),
-      payment_hash: bolt11.payment_hash().to_string(),
-      expires_at: bolt11.expires_at().unwrap().as_secs() as i64,
-    }
+    invoice_to_payment_metadata(bolt11)
+  }
+}
+
+fn scid_from_human_readable_string(human_readable_scid: &str) -> Result<u64, ()> {
+  let mut parts = human_readable_scid.split('x');
+
+  let block: u64 = parts.next().ok_or(())?.parse().map_err(|_e| ())?;
+  let tx_index: u64 = parts.next().ok_or(())?.parse().map_err(|_e| ())?;
+  let vout_index: u64 = parts.next().ok_or(())?.parse().map_err(|_e| ())?;
+
+  Ok((block << 40) | (tx_index << 16) | vout_index)
+}
+
+fn invoice_to_payment_metadata(invoice: Bolt11Invoice) -> PaymentMetadata {
+  let route_hints = invoice.route_hints();
+  let first_route_hint = route_hints.first().unwrap();
+  let hint_hop = first_route_hint.0.first().unwrap();
+  let scid = hint_hop.short_channel_id;
+
+  let block = scid_utils::block_from_scid(scid);
+  let tx_index = scid_utils::tx_index_from_scid(scid);
+  let vout = scid_utils::vout_from_scid(scid);
+
+  let human_readable_scid = format!("{}x{}x{}", block, tx_index, vout);
+
+  PaymentMetadata {
+    bolt11: invoice.to_string(),
+    payment_hash: invoice.payment_hash().to_string(),
+    expires_at: invoice.expires_at().unwrap().as_secs() as i64,
+    scid: human_readable_scid,
   }
 }

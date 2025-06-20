@@ -11,12 +11,12 @@ export interface MdkNodeOptions {
   mnemonic: string
   lspNodeId: string
   lspAddress: string
-  lspToken?: string
 }
 export interface PaymentMetadata {
   bolt11: string
   paymentHash: string
   expiresAt: number
+  scid: string
 }
 export interface ReceivedPayment {
   paymentHash: string
@@ -27,5 +27,6 @@ export declare class MdkNode {
   getNodeId(): string
   receivePayment(minThresholdMs: number, quietThresholdMs: number): Array<ReceivedPayment>
   getInvoice(amount: number, description: string, expirySecs: number): PaymentMetadata
+  getInvoiceWithScid(humanReadableScid: string, amount: number, description: string, expirySecs: number): PaymentMetadata
   getVariableAmountInvoice(description: string, expirySecs: number): PaymentMetadata
 }
