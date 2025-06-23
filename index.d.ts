@@ -6,6 +6,8 @@
 export declare function generateMnemonic(): string
 export interface MdkNodeOptions {
   network: string
+  mdkApiKey: string
+  vssUrl: string
   esploraUrl: string
   rgsUrl: string
   mnemonic: string

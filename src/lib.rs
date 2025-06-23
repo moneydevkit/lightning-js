@@ -1,6 +1,6 @@
 #![deny(clippy::all)]
 
-use std::str::FromStr;
+use std::{collections::HashMap, str::FromStr};
 
 use ldk_node::{
   bip39::Mnemonic,
@@ -23,6 +23,8 @@ pub fn generate_mnemonic() -> String {
 #[napi(object)]
 pub struct MdkNodeOptions {
   pub network: String,
+  pub mdk_api_key: String,
+  pub vss_url: String,
   pub esplora_url: String,
   pub rgs_url: String,
   pub mnemonic: String,
@@ -73,7 +75,15 @@ impl MdkNode {
     builder.set_log_facade_logger();
     builder.set_liquidity_source_lsps4(lsp_node_id, lsp_address);
 
-    let node = builder.build().unwrap();
+    let vss_headers = HashMap::from([(
+      "Authorization".to_string(),
+      format!("Bearer {}", options.mdk_api_key),
+    )]);
+
+    // TODO: probably want to replace store_id with something generated from mnemonic?
+    let node = builder
+      .build_with_vss_store_and_fixed_headers(options.vss_url, options.mdk_api_key, vss_headers)
+      .unwrap();
 
     Self { node }
   }
