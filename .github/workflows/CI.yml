@@ -86,11 +86,12 @@ jobs:
             build: |
               set -e
               apt-get update
-              apt-get install -y gcc-aarch64-linux-gnu
+              apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
               export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
               export CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
               export AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar
               export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+              export CFLAGS_aarch64_unknown_linux_gnu="-DAT_HWCAP2=26"
               yarn build --target aarch64-unknown-linux-gnu
           - host: ubuntu-latest
             target: aarch64-linux-android
