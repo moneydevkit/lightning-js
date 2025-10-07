@@ -54,7 +54,7 @@ pub struct MdkNode {
 #[napi]
 impl MdkNode {
   #[napi(constructor)]
-  pub fn new(options: MdkNodeOptions) -> Self {
+  pub fn new(options: MdkNodeOptions) -> napi::Result<Self> {
     let network = match options.network.as_str() {
       "mainnet" => Network::Bitcoin,
       "testnet" => Network::Testnet,
@@ -83,9 +83,9 @@ impl MdkNode {
     // TODO: probably want to replace store_id with something generated from mnemonic?
     let node = builder
       .build_with_vss_store_and_fixed_headers(options.vss_url, options.mdk_api_key, vss_headers)
-      .unwrap();
+      .map_err(|err| napi::Error::from_reason(err.to_string()))?;
 
-    Self { node }
+    Ok(Self { node })
   }
 
   #[napi]
