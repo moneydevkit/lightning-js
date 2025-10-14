@@ -75,6 +75,12 @@ impl MdkNode {
     builder.set_log_facade_logger();
     builder.set_liquidity_source_lsps4(lsp_node_id, lsp_address);
 
+    // Use /tmp for storage in serverless environments (e.g., Vercel)
+    // This is ephemeral but VSS provides persistence across invocations
+    let storage_path = std::env::var("LDK_STORAGE_DIR_PATH")
+      .unwrap_or_else(|_| "/tmp/ldk-node".to_string());
+    builder.set_storage_dir_path(storage_path);
+
     let vss_headers = HashMap::from([(
       "Authorization".to_string(),
       format!("Bearer {}", options.mdk_api_key),
