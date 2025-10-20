@@ -1,13 +1,18 @@
 #![deny(clippy::all)]
 
-use std::{collections::HashMap, str::FromStr};
+use std::{collections::HashMap, fmt::Write, str::FromStr};
+
+use napi::Status;
 
 use ldk_node::{
   bip39::Mnemonic,
   bitcoin::{secp256k1::PublicKey, Network},
   generate_entropy_mnemonic,
-  lightning::ln::msgs::SocketAddress,
-  lightning::util::scid_utils,
+  lightning::{
+    ln::msgs::SocketAddress,
+    offers::offer::{Amount, Offer},
+    util::scid_utils,
+  },
   lightning_invoice::{Bolt11Invoice, Bolt11InvoiceDescription, Description},
   Builder, Event, Node,
 };
@@ -247,6 +252,92 @@ impl MdkNode {
       .unwrap();
 
     invoice_to_payment_metadata(bolt11)
+  }
+
+  #[napi]
+  pub fn pay_bolt12_offer(&self, bolt12_offer_string: String) -> napi::Result<String> {
+    let bolt12_offer = Offer::from_str(&bolt12_offer_string)
+      .map_err(|_| napi::Error::new(Status::InvalidArg, "invalid bolt12 offer".to_string()))?;
+
+    self.node.start().map_err(|error| {
+      napi::Error::new(
+        Status::GenericFailure,
+        format!("failed to start node prior to paying offer: {error}"),
+      )
+    })?;
+
+    let available_balance_msat: u64 = self
+      .node
+      .list_channels()
+      .into_iter()
+      .filter(|channel| channel.is_usable)
+      .map(|channel| channel.outbound_capacity_msat)
+      .sum();
+
+    if available_balance_msat == 0 {
+      let _ = self.node.stop();
+      return Err(napi::Error::new(
+        Status::GenericFailure,
+        "unable to pay bolt12 offer without outbound capacity".to_string(),
+      ));
+    }
+
+    let amount_to_send_msat = match bolt12_offer.amount() {
+      Some(Amount::Bitcoin { amount_msats }) => amount_msats,
+      Some(_) => {
+        let _ = self.node.stop();
+        return Err(napi::Error::new(
+          Status::GenericFailure,
+          "unsupported currency in bolt12 offer".to_string(),
+        ));
+      }
+      None => available_balance_msat,
+    };
+
+    if amount_to_send_msat == 0 {
+      let _ = self.node.stop();
+      return Err(napi::Error::new(
+        Status::GenericFailure,
+        "bolt12 offer amount resolves to zero".to_string(),
+      ));
+    }
+
+    if available_balance_msat < amount_to_send_msat {
+      let _ = self.node.stop();
+      return Err(napi::Error::new(
+        Status::GenericFailure,
+        format!(
+          "insufficient outbound capacity to pay offer: required {}msat, available {}msat",
+          amount_to_send_msat, available_balance_msat,
+        ),
+      ));
+    }
+
+    let payment_id = match self.node.bolt12_payment().send_using_amount(
+      &bolt12_offer,
+      amount_to_send_msat,
+      None,
+      Some("A payment by MoneyDevKit".to_string()),
+    ) {
+      Ok(payment_id) => payment_id,
+      Err(error) => {
+        let _ = self.node.stop();
+        return Err(napi::Error::new(
+          Status::GenericFailure,
+          format!("failed to send bolt12 offer payment: {error}"),
+        ));
+      }
+    };
+
+    let _ = self.node.stop();
+
+    let payment_id_bytes = payment_id.0;
+    let mut payment_id_hex = String::with_capacity(payment_id_bytes.len() * 2);
+    for byte in payment_id_bytes {
+      write!(&mut payment_id_hex, "{:02x}", byte).unwrap();
+    }
+
+    Ok(payment_id_hex)
   }
 }
 

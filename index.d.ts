@@ -44,4 +44,5 @@ export declare class MdkNode {
     description: string,
     expirySecs: number,
   ): PaymentMetadata
+  payBolt12Offer(bolt12OfferString: string): string
 }
