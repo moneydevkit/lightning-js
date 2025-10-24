@@ -139,6 +139,58 @@ impl MdkNode {
       }
 
       if let Some(event) = self.node.next_event() {
+        match &event {
+          Event::PaymentFailed {
+            payment_id,
+            payment_hash,
+            reason,
+          } => {
+            let payment_id_hex = payment_id
+              .as_ref()
+              .map(|id| bytes_to_hex(&id.0))
+              .unwrap_or_else(|| "None".to_string());
+            let payment_hash_hex = payment_hash
+              .as_ref()
+              .map(|hash| bytes_to_hex(&hash.0))
+              .unwrap_or_else(|| "None".to_string());
+            let reason_str = reason
+              .as_ref()
+              .map(|r| format!("{r:?}"))
+              .unwrap_or_else(|| "Unknown".to_string());
+
+            eprintln!(
+              "[lightning-js] PaymentFailed payment_id={payment_id_hex} payment_hash={payment_hash_hex} reason={reason_str}",
+            );
+          }
+          Event::PaymentClaimable {
+            payment_hash,
+            claimable_amount_msat,
+            claim_deadline,
+            ..
+          } => {
+            let payment_hash_hex = bytes_to_hex(&payment_hash.0);
+            let claim_deadline_str = match claim_deadline {
+              Some(deadline) => deadline.to_string(),
+              None => "None".to_string(),
+            };
+
+            eprintln!(
+              "[lightning-js] PaymentClaimable payment_hash={payment_hash_hex} claimable_amount_msat={claimable_amount_msat} claim_deadline={claim_deadline_str}",
+            );
+          }
+          Event::PaymentReceived {
+            payment_hash,
+            amount_msat,
+            ..
+          } => {
+            let payment_hash_hex = bytes_to_hex(&payment_hash.0);
+            eprintln!(
+              "[lightning-js] PaymentReceived payment_hash={payment_hash_hex} amount_msat={amount_msat}",
+            );
+          }
+          _ => {}
+        }
+
         if let Event::PaymentReceived {
           payment_hash,
           amount_msat,
@@ -370,3 +422,12 @@ fn invoice_to_payment_metadata(invoice: Bolt11Invoice) -> PaymentMetadata {
     scid: human_readable_scid,
   }
 }
+
+fn bytes_to_hex(bytes: &[u8]) -> String {
+  let mut hex = String::with_capacity(bytes.len() * 2);
+  for byte in bytes {
+    let _ = write!(&mut hex, "{:02x}", byte);
+  }
+  hex
+}
+
