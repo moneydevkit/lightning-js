@@ -139,6 +139,8 @@ impl MdkNode {
       }
 
       if let Some(event) = self.node.next_event() {
+        eprintln!("[lightning-js] Event: {event:?}");
+
         match &event {
           Event::PaymentFailed {
             payment_id,
