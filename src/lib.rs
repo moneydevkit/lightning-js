@@ -100,17 +100,26 @@ impl MdkNode {
 
   #[napi]
   pub fn start(&self) {
-    self.node.start().unwrap();
+    if let Err(err) = self.node.start() {
+      eprintln!("[lightning-js] Failed to start node via start(): {err}");
+      panic!("failed to start node: {err}");
+    }
   }
 
   #[napi]
   pub fn stop(&self) {
-    self.node.stop().unwrap();
+    if let Err(err) = self.node.stop() {
+      eprintln!("[lightning-js] Failed to stop node via stop(): {err}");
+      panic!("failed to stop node: {err}");
+    }
   }
 
   #[napi]
   pub fn sync_wallets(&self) {
-    self.node.sync_wallets().unwrap();
+    if let Err(err) = self.node.sync_wallets() {
+      eprintln!("[lightning-js] Failed to sync wallets: {err}");
+      panic!("failed to sync wallets: {err}");
+    }
   }
 
   #[napi]
@@ -121,7 +130,8 @@ impl MdkNode {
   ) -> Vec<ReceivedPayment> {
     let mut received_payments = vec![];
 
-    if self.node.start().is_err() {
+    if let Err(err) = self.node.start() {
+      eprintln!("[lightning-js] Failed to start node in receive_payment: {err}");
       return received_payments;
     }
 
@@ -205,14 +215,18 @@ impl MdkNode {
           });
         }
 
-        let _ = self.node.event_handled();
+        if let Err(err) = self.node.event_handled() {
+          eprintln!("[lightning-js] Error while marking event handled: {err}");
+        }
         last_event_time = now;
       }
 
       std::thread::sleep(std::time::Duration::from_millis(10));
     }
 
-    let _ = self.node.stop();
+    if let Err(err) = self.node.stop() {
+      eprintln!("[lightning-js] Failed to stop node after receive_payment: {err}");
+    }
 
     received_payments
   }
@@ -221,7 +235,10 @@ impl MdkNode {
   pub fn get_invoice(&self, amount: i64, description: String, expiry_secs: i64) -> PaymentMetadata {
     let bolt11_invoice_description =
       Bolt11InvoiceDescription::Direct(Description::new(description).unwrap());
-    self.node.start().unwrap();
+    if let Err(err) = self.node.start() {
+      eprintln!("[lightning-js] Failed to start node for get_invoice: {err}");
+      panic!("failed to start node for get_invoice: {err}");
+    }
 
     let invoice = self
       .node
@@ -233,7 +250,9 @@ impl MdkNode {
       )
       .unwrap();
 
-    let _ = self.node.stop();
+    if let Err(err) = self.node.stop() {
+      eprintln!("[lightning-js] Failed to stop node after get_invoice: {err}");
+    }
 
     invoice_to_payment_metadata(invoice)
   }
@@ -329,7 +348,9 @@ impl MdkNode {
       .sum();
 
     if available_balance_msat == 0 {
-      let _ = self.node.stop();
+      if let Err(err) = self.node.stop() {
+        eprintln!("[lightning-js] Failed to stop node after checking bolt12 outbound capacity: {err}");
+      }
       return Err(napi::Error::new(
         Status::GenericFailure,
         "unable to pay bolt12 offer without outbound capacity".to_string(),
@@ -339,7 +360,9 @@ impl MdkNode {
     let amount_to_send_msat = match bolt12_offer.amount() {
       Some(Amount::Bitcoin { amount_msats }) => amount_msats,
       Some(_) => {
-        let _ = self.node.stop();
+        if let Err(err) = self.node.stop() {
+          eprintln!("[lightning-js] Failed to stop node after unsupported bolt12 currency: {err}");
+        }
         return Err(napi::Error::new(
           Status::GenericFailure,
           "unsupported currency in bolt12 offer".to_string(),
@@ -349,7 +372,9 @@ impl MdkNode {
     };
 
     if amount_to_send_msat == 0 {
-      let _ = self.node.stop();
+      if let Err(err) = self.node.stop() {
+        eprintln!("[lightning-js] Failed to stop node after zero-amount bolt12 offer: {err}");
+      }
       return Err(napi::Error::new(
         Status::GenericFailure,
         "bolt12 offer amount resolves to zero".to_string(),
@@ -357,7 +382,9 @@ impl MdkNode {
     }
 
     if available_balance_msat < amount_to_send_msat {
-      let _ = self.node.stop();
+      if let Err(err) = self.node.stop() {
+        eprintln!("[lightning-js] Failed to stop node after insufficient outbound capacity: {err}");
+      }
       return Err(napi::Error::new(
         Status::GenericFailure,
         format!(
@@ -375,7 +402,9 @@ impl MdkNode {
     ) {
       Ok(payment_id) => payment_id,
       Err(error) => {
-        let _ = self.node.stop();
+        if let Err(stop_error) = self.node.stop() {
+          eprintln!("[lightning-js] Failed to stop node after bolt12 send error: {stop_error}");
+        }
         return Err(napi::Error::new(
           Status::GenericFailure,
           format!("failed to send bolt12 offer payment: {error}"),
@@ -383,7 +412,9 @@ impl MdkNode {
       }
     };
 
-    let _ = self.node.stop();
+    if let Err(err) = self.node.stop() {
+      eprintln!("[lightning-js] Failed to stop node after successful bolt12 payment: {err}");
+    }
 
     let payment_id_bytes = payment_id.0;
     let mut payment_id_hex = String::with_capacity(payment_id_bytes.len() * 2);
