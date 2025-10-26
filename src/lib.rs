@@ -349,7 +349,9 @@ impl MdkNode {
 
     if available_balance_msat == 0 {
       if let Err(err) = self.node.stop() {
-        eprintln!("[lightning-js] Failed to stop node after checking bolt12 outbound capacity: {err}");
+        eprintln!(
+          "[lightning-js] Failed to stop node after checking bolt12 outbound capacity: {err}"
+        );
       }
       return Err(napi::Error::new(
         Status::GenericFailure,
