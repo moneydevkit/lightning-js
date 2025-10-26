@@ -1,6 +1,6 @@
 {
   "name": "@moneydevkit/lightning-js-android-arm-eabi",
-  "version": "0.1.20",
+  "version": "0.1.21",
   "os": [
     "android"
   ],
