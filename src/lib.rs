@@ -1,9 +1,21 @@
 #![deny(clippy::all)]
 
-use std::{collections::HashMap, fmt::Write, str::FromStr};
+use std::{
+  collections::HashMap,
+  fmt::Write,
+  str::FromStr,
+  sync::{
+    atomic::{AtomicU8, Ordering},
+    Arc, OnceLock, RwLock,
+  },
+};
 
-use napi::Status;
+use napi::{
+  threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode},
+  Env, JsFunction, Status,
+};
 
+use ldk_node::logger::{LogLevel, LogRecord, LogWriter};
 use ldk_node::{
   bip39::Mnemonic,
   bitcoin::{secp256k1::PublicKey, Network},
@@ -19,6 +31,160 @@ use ldk_node::{
 
 #[macro_use]
 extern crate napi_derive;
+
+static GLOBAL_LOGGER: OnceLock<Arc<JsLogger>> = OnceLock::new();
+
+fn logger_instance() -> &'static Arc<JsLogger> {
+  GLOBAL_LOGGER.get_or_init(|| Arc::new(JsLogger::new()))
+}
+
+fn level_to_str(level: LogLevel) -> &'static str {
+  match level {
+    LogLevel::Gossip => "GOSSIP",
+    LogLevel::Trace => "TRACE",
+    LogLevel::Debug => "DEBUG",
+    LogLevel::Info => "INFO",
+    LogLevel::Warn => "WARN",
+    LogLevel::Error => "ERROR",
+  }
+}
+
+fn level_to_rank(level: LogLevel) -> u8 {
+  level as u8
+}
+
+fn parse_level(level: &str) -> Option<LogLevel> {
+  match level.to_ascii_uppercase().as_str() {
+    "GOSSIP" => Some(LogLevel::Gossip),
+    "TRACE" => Some(LogLevel::Trace),
+    "DEBUG" => Some(LogLevel::Debug),
+    "INFO" => Some(LogLevel::Info),
+    "WARN" | "WARNING" => Some(LogLevel::Warn),
+    "ERROR" => Some(LogLevel::Error),
+    _ => None,
+  }
+}
+
+#[derive(Clone)]
+struct LogMessage {
+  level: LogLevel,
+  module_path: String,
+  line: u32,
+  message: String,
+}
+
+struct JsLogger {
+  listener: RwLock<Option<ThreadsafeFunction<LogMessage>>>,
+  min_level: AtomicU8,
+}
+
+impl JsLogger {
+  fn new() -> Self {
+    Self {
+      listener: RwLock::new(None),
+      min_level: AtomicU8::new(level_to_rank(LogLevel::Info)),
+    }
+  }
+
+  fn set_listener(
+    &self,
+    env: Env,
+    callback: Option<JsFunction>,
+    min_level: Option<String>,
+  ) -> napi::Result<()> {
+    if let Some(level_str) = min_level {
+      if let Some(level) = parse_level(&level_str) {
+        self
+          .min_level
+          .store(level_to_rank(level), Ordering::Relaxed);
+      } else {
+        return Err(napi::Error::new(
+          Status::InvalidArg,
+          format!("Unknown log level '{level_str}'"),
+        ));
+      }
+    }
+
+    let mut guard = self.listener.write().unwrap();
+    *guard = match callback {
+      Some(cb) => {
+        let tsfn = cb.create_threadsafe_function(0, |ctx| {
+          let LogMessage {
+            level,
+            module_path,
+            line,
+            message,
+          } = ctx.value;
+          let env = ctx.env;
+          let js_obj = env.create_object()?;
+          let level_str = level_to_str(level);
+          js_obj.set_named_property("level", env.create_string(level_str)?)?;
+          js_obj.set_named_property("modulePath", env.create_string(&module_path)?)?;
+          js_obj.set_named_property("line", env.create_uint32(line)?)?;
+          js_obj.set_named_property("message", env.create_string(&message)?)?;
+          Ok(vec![js_obj])
+        })?;
+        tsfn.unref()?;
+        Some(tsfn)
+      }
+      None => None,
+    };
+
+    Ok(())
+  }
+
+  fn dispatch(&self, message: LogMessage) {
+    if level_to_rank(message.level) < self.min_level.load(Ordering::Relaxed) {
+      return;
+    }
+
+    let maybe_tsfn = self.listener.read().unwrap().clone();
+    if let Some(tsfn) = maybe_tsfn {
+      if tsfn
+        .call(Ok(message.clone()), ThreadsafeFunctionCallMode::NonBlocking)
+        .is_err()
+      {
+        eprintln!(
+          "[ldk-node {} {}:{}] {}",
+          level_to_str(message.level),
+          message.module_path,
+          message.line,
+          message.message,
+        );
+      }
+    } else {
+      eprintln!(
+        "[ldk-node {} {}:{}] {}",
+        level_to_str(message.level),
+        message.module_path,
+        message.line,
+        message.message,
+      );
+    }
+  }
+}
+
+impl LogWriter for JsLogger {
+  fn log<'a>(&self, record: LogRecord<'a>) {
+    let message = format!("{}", record.args);
+    let payload = LogMessage {
+      level: record.level,
+      module_path: record.module_path.to_string(),
+      line: record.line,
+      message,
+    };
+    self.dispatch(payload);
+  }
+}
+
+#[napi]
+pub fn set_log_listener(
+  env: Env,
+  callback: Option<JsFunction>,
+  min_level: Option<String>,
+) -> napi::Result<()> {
+  logger_instance().set_listener(env, callback, min_level)
+}
 
 #[napi]
 pub fn generate_mnemonic() -> String {
@@ -77,7 +243,8 @@ impl MdkNode {
     builder.set_chain_source_esplora(options.esplora_url, None);
     builder.set_gossip_source_rgs(options.rgs_url);
     builder.set_entropy_bip39_mnemonic(mnemonic, None);
-    builder.set_log_facade_logger();
+    let logger: Arc<dyn LogWriter> = Arc::clone(logger_instance());
+    builder.set_custom_logger(logger);
     builder.set_liquidity_source_lsps4(lsp_node_id, lsp_address);
 
     let vss_headers = HashMap::from([(
