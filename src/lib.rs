@@ -108,7 +108,7 @@ impl JsLogger {
     let mut guard = self.listener.write().unwrap();
     *guard = match callback {
       Some(cb) => {
-        let tsfn = cb.create_threadsafe_function(0, |ctx| {
+        let mut tsfn = cb.create_threadsafe_function(0, |ctx| {
           let LogMessage {
             level,
             module_path,
@@ -116,15 +116,15 @@ impl JsLogger {
             message,
           } = ctx.value;
           let env = ctx.env;
-          let js_obj = env.create_object()?;
+          let mut js_obj = env.create_object()?;
           let level_str = level_to_str(level);
           js_obj.set_named_property("level", env.create_string(level_str)?)?;
           js_obj.set_named_property("modulePath", env.create_string(&module_path)?)?;
           js_obj.set_named_property("line", env.create_uint32(line)?)?;
           js_obj.set_named_property("message", env.create_string(&message)?)?;
-          Ok(vec![js_obj])
+          Ok(vec![js_obj.into_unknown()])
         })?;
-        tsfn.unref()?;
+        tsfn.unref(&env)?;
         Some(tsfn)
       }
       None => None,
@@ -140,10 +140,8 @@ impl JsLogger {
 
     let maybe_tsfn = self.listener.read().unwrap().clone();
     if let Some(tsfn) = maybe_tsfn {
-      if tsfn
-        .call(Ok(message.clone()), ThreadsafeFunctionCallMode::NonBlocking)
-        .is_err()
-      {
+      let status = tsfn.call(Ok(message.clone()), ThreadsafeFunctionCallMode::NonBlocking);
+      if status != Status::Ok {
         eprintln!(
           "[ldk-node {} {}:{}] {}",
           level_to_str(message.level),
@@ -243,7 +241,8 @@ impl MdkNode {
     builder.set_chain_source_esplora(options.esplora_url, None);
     builder.set_gossip_source_rgs(options.rgs_url);
     builder.set_entropy_bip39_mnemonic(mnemonic, None);
-    let logger: Arc<dyn LogWriter> = Arc::clone(logger_instance());
+    let logger_arc = Arc::clone(logger_instance());
+    let logger: Arc<dyn LogWriter> = logger_arc;
     builder.set_custom_logger(logger);
     builder.set_liquidity_source_lsps4(lsp_node_id, lsp_address);
 
