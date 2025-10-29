@@ -405,6 +405,7 @@ impl MdkNode {
       eprintln!("[lightning-js] Failed to start node for get_invoice: {err}");
       panic!("failed to start node for get_invoice: {err}");
     }
+    self.node.sync_wallets();
 
     let invoice = self
       .node
