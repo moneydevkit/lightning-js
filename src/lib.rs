@@ -163,7 +163,7 @@ impl JsLogger {
 }
 
 impl LogWriter for JsLogger {
-  fn log<'a>(&self, record: LogRecord<'a>) {
+  fn log(&self, record: LogRecord<'_>) {
     let message = format!("{}", record.args);
     let payload = LogMessage {
       level: record.level,
@@ -405,7 +405,10 @@ impl MdkNode {
       eprintln!("[lightning-js] Failed to start node for get_invoice: {err}");
       panic!("failed to start node for get_invoice: {err}");
     }
-    self.node.sync_wallets();
+    if let Err(err) = self.node.sync_wallets() {
+      eprintln!("[lightning-js] Failed to sync wallets: {err}");
+      panic!("failed to sync wallets: {err}");
+    }
 
     let invoice = self
       .node
