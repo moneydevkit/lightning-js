@@ -12,6 +12,14 @@ napi        = { version = "2", features = ["napi4"] }
 napi-derive = "2"
 # Temporary pin: ldk-node pulls in home 0.5.12 which needs edition2024 cargo
 home = "=0.5.11"
+# Pin ICU crates to keep MSRV at 1.82.0
+icu_collections     = "=2.0.0"
+icu_locale_core     = "=2.0.0"
+icu_normalizer      = "=2.0.0"
+icu_normalizer_data = "=2.0.0"
+icu_properties      = "=2.0.0"
+icu_properties_data = "=2.0.0"
+icu_provider        = "=2.0.0"
 
 [build-dependencies]
 napi-build = "2"
