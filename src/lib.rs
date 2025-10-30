@@ -2,6 +2,7 @@
 
 use std::{
   collections::HashMap,
+  convert::TryFrom,
   fmt::Write,
   str::FromStr,
   sync::{
@@ -26,7 +27,7 @@ use ldk_node::{
     util::scid_utils,
   },
   lightning_invoice::{Bolt11Invoice, Bolt11InvoiceDescription, Description},
-  Builder, Event, Node,
+  BalanceDetails, Builder, Event, Node,
 };
 
 #[macro_use]
@@ -215,6 +216,25 @@ pub struct ReceivedPayment {
   pub amount: i64,
 }
 
+#[napi(object)]
+pub struct NodeBalance {
+  pub total_onchain_balance_sats: i64,
+  pub spendable_onchain_balance_sats: i64,
+  pub total_anchor_channels_reserve_sats: i64,
+  pub total_lightning_balance_sats: i64,
+}
+
+impl From<BalanceDetails> for NodeBalance {
+  fn from(details: BalanceDetails) -> Self {
+    Self {
+      total_onchain_balance_sats: u64_to_i64(details.total_onchain_balance_sats),
+      spendable_onchain_balance_sats: u64_to_i64(details.spendable_onchain_balance_sats),
+      total_anchor_channels_reserve_sats: u64_to_i64(details.total_anchor_channels_reserve_sats),
+      total_lightning_balance_sats: u64_to_i64(details.total_lightning_balance_sats),
+    }
+  }
+}
+
 #[napi]
 pub struct MdkNode {
   node: Node,
@@ -282,10 +302,47 @@ impl MdkNode {
 
   #[napi]
   pub fn sync_wallets(&self) {
+    if let Err(err) = self.node.start() {
+      eprintln!("[lightning-js] Failed to start node via start(): {err}");
+      panic!("failed to start node: {err}");
+    }
+
     if let Err(err) = self.node.sync_wallets() {
       eprintln!("[lightning-js] Failed to sync wallets: {err}");
       panic!("failed to sync wallets: {err}");
     }
+
+    if let Err(err) = self.node.stop() {
+      eprintln!("[lightning-js] Failed to stop node via stop(): {err}");
+      panic!("failed to stop node: {err}");
+    }
+  }
+
+  #[napi]
+  pub fn get_balance(&self) -> NodeBalance {
+    if let Err(err) = self.node.start() {
+      eprintln!("[lightning-js] Failed to start node via get_balance: {err}");
+      panic!("failed to start node: {err}");
+    }
+
+    if let Err(err) = self.node.sync_wallets() {
+      eprintln!("[lightning-js] Failed to sync wallets in get_balance: {err}");
+      if let Err(stop_err) = self.node.stop() {
+        eprintln!(
+          "[lightning-js] Failed to stop node after sync_wallets error in get_balance: {stop_err}"
+        );
+      }
+      panic!("failed to sync wallets: {err}");
+    }
+
+    let balances = self.node.list_balances();
+
+    if let Err(err) = self.node.stop() {
+      eprintln!("[lightning-js] Failed to stop node via stop() in get_balance: {err}");
+      panic!("failed to stop node: {err}");
+    }
+
+    balances.into()
   }
 
   #[napi]
@@ -639,4 +696,8 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
     let _ = write!(&mut hex, "{:02x}", byte);
   }
   hex
+}
+
+fn u64_to_i64(value: u64) -> i64 {
+  i64::try_from(value).unwrap_or(i64::MAX)
 }
