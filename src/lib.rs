@@ -301,6 +301,11 @@ impl MdkNode {
       return received_payments;
     }
 
+    if let Err(err) = self.node.sync_wallets() {
+      eprintln!("[lightning-js] Failed to sync wallets: {err}");
+      panic!("failed to sync wallets: {err}");
+    }
+
     let start_sync_at = std::time::Instant::now();
     let mut last_event_time = start_sync_at;
 
