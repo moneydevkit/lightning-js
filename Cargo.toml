@@ -7,7 +7,7 @@ version = "0.1.0"
 crate-type = ["cdylib"]
 
 [dependencies]
-ldk-node    = { default-features = false, git = "https://github.com/moneydevkit/ldk-node.git", rev = "cbb243c6dddc6771b227348a319f6427612622ea" }
+ldk-node    = { default-features = false, git = "https://github.com/moneydevkit/ldk-node.git", branch = "with-skimmed-fees" }
 napi        = { version = "2", features = ["napi4"] }
 napi-derive = "2"
 # Temporary pin: ldk-node pulls in home 0.5.12 which needs edition2024 cargo
