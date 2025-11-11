@@ -21,7 +21,7 @@ icu_provider    = "=2.0.0"
 writeable       = { version = "=0.6.2", features = ["alloc"] }
 
 [build-dependencies]
-napi-build = "2"
+napi-build = "=2.2.4"
 
 [profile.release]
 lto = true
