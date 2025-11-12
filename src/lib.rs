@@ -345,8 +345,7 @@ impl MdkNode {
     for c in channels {
       eprintln!(
         "{} accept_underpaying_htlcs={:?}",
-        c.channel_id,
-        c.config.accept_underpaying_htlcs
+        c.channel_id, c.config.accept_underpaying_htlcs
       );
     }
 
