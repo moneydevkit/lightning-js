@@ -320,6 +320,14 @@ impl MdkNode {
       );
     }
 
+    let peers = self.node.list_peers();
+    for peer in peers {
+      eprintln!(
+        "[lightning-js] Peer node_id={} address={} persisted={} connected={}",
+        peer.node_id, peer.address, peer.is_persisted, peer.is_connected
+      );
+    }
+
     if let Err(err) = self.node.stop() {
       eprintln!("[lightning-js] Failed to stop node via stop(): {err}");
       panic!("failed to stop node: {err}");
