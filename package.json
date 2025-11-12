@@ -1,6 +1,6 @@
 {
   "name": "@moneydevkit/lightning-js",
-  "version": "0.1.39",
+  "version": "0.1.40",
   "main": "index.js",
   "files": [
     "index.d.ts",
