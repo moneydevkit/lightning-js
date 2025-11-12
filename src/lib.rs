@@ -191,24 +191,15 @@ pub fn generate_mnemonic() -> String {
 }
 
 #[napi(object)]
-pub struct RegtestBitcoinRpcConfig {
-  pub rpc_host: String,
-  pub rpc_port: u16,
-  pub rpc_user: String,
-  pub rpc_password: String,
-}
-
-#[napi(object)]
 pub struct MdkNodeOptions {
   pub network: String,
   pub mdk_api_key: String,
   pub vss_url: String,
-  pub esplora_url: Option<String>,
+  pub esplora_url: String,
   pub rgs_url: String,
   pub mnemonic: String,
   pub lsp_node_id: String,
   pub lsp_address: String,
-  pub bitcoind_rpc_config: Option<RegtestBitcoinRpcConfig>,
 }
 
 #[napi(object)]
@@ -267,27 +258,7 @@ impl MdkNode {
 
     let mut builder = Builder::new();
     builder.set_network(network);
-    if let Some(esplora_url) = options.esplora_url {
-      builder.set_chain_source_esplora(esplora_url, None);
-    } else if let Some(bitcoind_rpc_config) = &options.bitcoind_rpc_config {
-      if network != Network::Regtest {
-        return Err(napi::Error::new(
-          Status::InvalidArg,
-          "bitcoind RPC config can only be used with regtest network".to_string(),
-        ));
-      }
-      builder.set_chain_source_bitcoind_rpc(
-        bitcoind_rpc_config.rpc_host.clone(),
-        bitcoind_rpc_config.rpc_port,
-        bitcoind_rpc_config.rpc_user.clone(),
-        bitcoind_rpc_config.rpc_password.clone(),
-      );
-    } else {
-      return Err(napi::Error::new(
-        Status::InvalidArg,
-        "either esplora_url or bitcoind_rpc_config must be provided".to_string(),
-      ));
-    }
+    builder.set_chain_source_esplora(options.esplora_url, None);
     builder.set_gossip_source_rgs(options.rgs_url);
     builder.set_entropy_bip39_mnemonic(mnemonic, None);
     let logger_arc = Arc::clone(logger_instance());

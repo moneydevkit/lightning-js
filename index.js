@@ -284,8 +284,8 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { setLogListener, generateMnemonic, MdkNode } = nativeBinding
+const { generateMnemonic, setLogListener, MdkNode } = nativeBinding
 
-module.exports.setLogListener = setLogListener
 module.exports.generateMnemonic = generateMnemonic
+module.exports.setLogListener = setLogListener
 module.exports.MdkNode = MdkNode
