@@ -341,6 +341,15 @@ impl MdkNode {
       panic!("failed to sync wallets: {err}");
     }
 
+    let channels = self.node.list_channels();
+    for c in channels {
+      eprintln!(
+        "{} accept_underpaying_htlcs={:?}",
+        c.channel_id,
+        c.config.accept_underpaying_htlcs
+      );
+    }
+
     if let Err(err) = self.node.stop() {
       eprintln!("[lightning-js] Failed to stop node via stop(): {err}");
       panic!("failed to stop node: {err}");
