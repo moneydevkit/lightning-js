@@ -7,9 +7,13 @@ version = "0.1.0"
 crate-type = ["cdylib"]
 
 [dependencies]
-ldk-node    = { default-features = false, git = "https://github.com/moneydevkit/ldk-node.git", branch = "with-skimmed-fees" }
-napi        = { version = "2", features = ["napi4"] }
+bitcoin-payment-instructions = { version = "0.5.0", default-features = false, features = [
+  "http",
+] }
+ldk-node = { default-features = false, git = "https://github.com/moneydevkit/ldk-node.git", branch = "with-skimmed-fees" }
+napi = { version = "2", features = ["napi4"] }
 napi-derive = "2"
+tokio = { version = "1", features = ["rt-multi-thread"] }
 # Temporary pin: ldk-node pulls in home 0.5.12 which needs edition2024 cargo
 home = "=0.5.11"
 # Pin ICU crates to keep MSRV at 1.82.0
@@ -25,3 +29,7 @@ napi-build = "=2.2.4"
 
 [profile.release]
 lto = true
+
+[dev-dependencies]
+bitcoin           = "0.32"
+lightning-invoice = "0.33.2"
