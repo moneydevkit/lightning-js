@@ -23,7 +23,11 @@ use napi::{
 use ldk_node::logger::{LogLevel, LogRecord, LogWriter};
 use ldk_node::{
   bip39::Mnemonic,
-  bitcoin::{secp256k1::PublicKey, Network},
+  bitcoin::{
+    hashes::{sha256, Hash},
+    secp256k1::PublicKey,
+    Network,
+  },
   generate_entropy_mnemonic,
   lightning::{
     ln::msgs::SocketAddress,
@@ -195,6 +199,11 @@ pub fn generate_mnemonic() -> String {
   generate_entropy_mnemonic().to_string()
 }
 
+fn derive_vss_identifier(mnemonic: &Mnemonic) -> String {
+  let mnemonic_phrase = mnemonic.to_string();
+  sha256::Hash::hash(mnemonic_phrase.as_bytes()).to_string()
+}
+
 #[napi(object)]
 pub struct MdkNodeOptions {
   pub network: String,
@@ -271,6 +280,7 @@ impl MdkNode {
     };
 
     let mnemonic = Mnemonic::from_str(&options.mnemonic).unwrap();
+    let vss_identifier = derive_vss_identifier(&mnemonic);
     let lsp_node_id = PublicKey::from_str(&options.lsp_node_id).unwrap();
     let lsp_address = SocketAddress::from_str(&options.lsp_address).unwrap();
 
@@ -286,12 +296,11 @@ impl MdkNode {
 
     let vss_headers = HashMap::from([(
       "Authorization".to_string(),
-      format!("Bearer {}", options.mdk_api_key),
+      format!("Bearer {}", vss_identifier.clone()),
     )]);
 
-    // TODO: probably want to replace store_id with something generated from mnemonic?
     let node = builder
-      .build_with_vss_store_and_fixed_headers(options.vss_url, options.mdk_api_key, vss_headers)
+      .build_with_vss_store_and_fixed_headers(options.vss_url, vss_identifier, vss_headers)
       .map_err(|err| napi::Error::from_reason(err.to_string()))?;
 
     Ok(Self { node, network })
