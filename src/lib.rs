@@ -296,7 +296,7 @@ impl MdkNode {
 
     let vss_headers = HashMap::from([(
       "Authorization".to_string(),
-      format!("Bearer {}", vss_identifier.clone()),
+      format!("Bearer {}", options.mdk_api_key),
     )]);
 
     let node = builder
