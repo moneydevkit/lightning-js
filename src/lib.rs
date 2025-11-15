@@ -343,7 +343,7 @@ impl MdkNode {
   }
 
   #[napi]
-  pub fn get_balance(&self) -> NodeBalance {
+  pub fn get_balance(&self) -> i64 {
     if let Err(err) = self.node.start() {
       eprintln!("[lightning-js] Failed to start node via get_balance: {err}");
       panic!("failed to start node: {err}");

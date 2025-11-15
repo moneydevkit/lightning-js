@@ -28,12 +28,6 @@ export interface ReceivedPayment {
   paymentHash: string
   amount: number
 }
-export interface NodeBalance {
-  totalOnchainBalanceSats: number
-  spendableOnchainBalanceSats: number
-  totalAnchorChannelsReserveSats: number
-  totalLightningBalanceSats: number
-}
 export interface NodeChannel {
   channelId: string
   counterpartyNodeId: string
@@ -50,7 +44,7 @@ export declare class MdkNode {
   start(): void
   stop(): void
   syncWallets(): void
-  getBalance(): NodeBalance
+  getBalance(): number
   listChannels(): Array<NodeChannel>
   receivePayment(minThresholdMs: number, quietThresholdMs: number): Array<ReceivedPayment>
   getInvoice(amount: number, description: string, expirySecs: number): PaymentMetadata
