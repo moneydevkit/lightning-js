@@ -35,7 +35,7 @@ use ldk_node::{
     util::scid_utils,
   },
   lightning_invoice::{Bolt11Invoice, Bolt11InvoiceDescription, Description},
-  BalanceDetails, Builder, Event, Node,
+  Builder, Event, Node,
 };
 use tokio::runtime::Runtime;
 
@@ -231,25 +231,6 @@ pub struct ReceivedPayment {
 }
 
 #[napi(object)]
-pub struct NodeBalance {
-  pub total_onchain_balance_sats: i64,
-  pub spendable_onchain_balance_sats: i64,
-  pub total_anchor_channels_reserve_sats: i64,
-  pub total_lightning_balance_sats: i64,
-}
-
-impl From<BalanceDetails> for NodeBalance {
-  fn from(details: BalanceDetails) -> Self {
-    Self {
-      total_onchain_balance_sats: u64_to_i64(details.total_onchain_balance_sats),
-      spendable_onchain_balance_sats: u64_to_i64(details.spendable_onchain_balance_sats),
-      total_anchor_channels_reserve_sats: u64_to_i64(details.total_anchor_channels_reserve_sats),
-      total_lightning_balance_sats: u64_to_i64(details.total_lightning_balance_sats),
-    }
-  }
-}
-
-#[napi(object)]
 pub struct NodeChannel {
   pub channel_id: String,
   pub counterparty_node_id: String,
@@ -378,14 +359,20 @@ impl MdkNode {
       panic!("failed to sync wallets: {err}");
     }
 
-    let balances = self.node.list_balances();
+    let total_outbound_msat = self
+      .node
+      .list_channels()
+      .into_iter()
+      .fold(0u64, |acc, channel| {
+        acc.saturating_add(channel.outbound_capacity_msat)
+      });
 
     if let Err(err) = self.node.stop() {
       eprintln!("[lightning-js] Failed to stop node via stop() in get_balance: {err}");
       panic!("failed to stop node: {err}");
     }
 
-    balances.into()
+    u64_to_i64(total_outbound_msat / 1_000)
   }
 
   #[napi]
