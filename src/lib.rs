@@ -747,7 +747,7 @@ impl MdkNode {
       .node
       .list_channels()
       .into_iter()
-      .filter(|channel| channel.is_usable)
+      .filter(|channel| channel.is_channel_ready)
       .map(|channel| channel.outbound_capacity_msat)
       .sum();
 
@@ -816,7 +816,7 @@ impl MdkNode {
       .node
       .list_channels()
       .into_iter()
-      .filter(|channel| channel.is_usable)
+      .filter(|channel| channel.is_channel_ready)
       .map(|channel| channel.outbound_capacity_msat)
       .sum();
 
