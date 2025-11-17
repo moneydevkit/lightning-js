@@ -801,7 +801,21 @@ impl MdkNode {
   }
 
   #[napi]
-  pub fn pay_bolt12_offer(&self, bolt12_offer_string: String) -> napi::Result<String> {
+  pub fn pay_bolt12_offer(&self, bolt12_offer_string: String, amount_msat: i64) -> napi::Result<String> {
+    if amount_msat <= 0 {
+      return Err(napi::Error::new(
+        Status::InvalidArg,
+        "amount must be greater than zero".to_string(),
+      ));
+    }
+
+    let amount_msat_u64 = u64::try_from(amount_msat).map_err(|_| {
+      napi::Error::new(
+        Status::InvalidArg,
+        "amount must be representable as an unsigned 64-bit value".to_string(),
+      )
+    })?;
+
     let bolt12_offer = Offer::from_str(&bolt12_offer_string)
       .map_err(|_| napi::Error::new(Status::InvalidArg, "invalid bolt12 offer".to_string()))?;
 
@@ -811,6 +825,11 @@ impl MdkNode {
         format!("failed to start node prior to paying offer: {error}"),
       )
     })?;
+
+    if let Err(err) = self.node.sync_wallets() {
+      eprintln!("[lightning-js] Failed to sync wallets: {err}");
+      panic!("failed to sync wallets: {err}");
+    }
 
     let available_balance_msat: u64 = self
       .node
@@ -843,7 +862,7 @@ impl MdkNode {
           "unsupported currency in bolt12 offer".to_string(),
         ));
       }
-      None => available_balance_msat,
+      None => amount_msat_u64,
     };
 
     if amount_to_send_msat == 0 {

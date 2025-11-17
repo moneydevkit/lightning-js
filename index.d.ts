@@ -62,5 +62,5 @@ export declare class MdkNode {
   ): PaymentMetadata
   payLnurl(lnurl: string, amountMsat: number): string
   payBolt11(bolt11Invoice: string): string
-  payBolt12Offer(bolt12OfferString: string): string
+  payBolt12Offer(bolt12OfferString: string, amountMsat: number): string
 }
