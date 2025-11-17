@@ -801,7 +801,11 @@ impl MdkNode {
   }
 
   #[napi]
-  pub fn pay_bolt12_offer(&self, bolt12_offer_string: String, amount_msat: i64) -> napi::Result<String> {
+  pub fn pay_bolt12_offer(
+    &self,
+    bolt12_offer_string: String,
+    amount_msat: i64,
+  ) -> napi::Result<String> {
     if amount_msat <= 0 {
       return Err(napi::Error::new(
         Status::InvalidArg,
