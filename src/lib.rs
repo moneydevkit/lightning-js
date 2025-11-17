@@ -9,6 +9,7 @@ use std::{
     atomic::{AtomicU8, Ordering},
     Arc, OnceLock, RwLock,
   },
+  time::{Duration, Instant},
 };
 
 use bitcoin_payment_instructions::{
@@ -29,6 +30,7 @@ use ldk_node::{
     Network,
   },
   generate_entropy_mnemonic,
+  lightning::ln::channelmanager::PaymentId,
   lightning::{
     ln::msgs::SocketAddress,
     offers::offer::{Amount, Offer},
@@ -619,8 +621,77 @@ impl MdkNode {
     invoice_to_payment_metadata(bolt11)
   }
 
+  fn wait_for_payment_outcome(
+    &self,
+    payment_id: &PaymentId,
+    timeout_secs: u64,
+  ) -> napi::Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+
+    loop {
+      if let Some(event) = self.node.next_event() {
+        match event {
+          Event::PaymentSuccessful {
+            payment_id: event_payment_id,
+            ..
+          } => {
+            self
+              .node
+              .event_handled()
+              .map_err(|err| napi::Error::new(Status::GenericFailure, err.to_string()))?;
+
+            if event_payment_id == Some(*payment_id) {
+              return Ok(());
+            }
+          }
+          Event::PaymentFailed {
+            payment_id: Some(event_payment_id),
+            reason,
+            ..
+          } => {
+            self
+              .node
+              .event_handled()
+              .map_err(|err| napi::Error::new(Status::GenericFailure, err.to_string()))?;
+
+            if event_payment_id == *payment_id {
+              let reason_str = reason
+                .map(|r| format!("{r:?}"))
+                .unwrap_or_else(|| "unknown reason".to_string());
+
+              return Err(napi::Error::new(
+                Status::GenericFailure,
+                format!("lnurl payment failed: {reason_str}"),
+              ));
+            }
+          }
+          _ => {
+            self
+              .node
+              .event_handled()
+              .map_err(|err| napi::Error::new(Status::GenericFailure, err.to_string()))?;
+          }
+        }
+      }
+
+      if Instant::now() >= deadline {
+        eprintln!(
+          "[lightning-js] Timed out waiting {timeout_secs}s for lnurl payment confirmation"
+        );
+        return Ok(());
+      }
+
+      std::thread::sleep(Duration::from_millis(50));
+    }
+  }
+
   #[napi]
-  pub fn pay_lnurl(&self, lnurl: String, amount_msat: i64) -> napi::Result<String> {
+  pub fn pay_lnurl(
+    &self,
+    lnurl: String,
+    amount_msat: i64,
+    wait_for_payment_secs: Option<i64>,
+  ) -> napi::Result<String> {
     if amount_msat <= 0 {
       return Err(napi::Error::new(
         Status::InvalidArg,
@@ -641,6 +712,13 @@ impl MdkNode {
         "amount exceeds supported maximum (21 million BTC)".to_string(),
       )
     })?;
+
+    let wait_for_payment_secs = wait_for_payment_secs.unwrap_or(0);
+    let wait_for_payment_secs = if wait_for_payment_secs > 0 {
+      Some(wait_for_payment_secs as u64)
+    } else {
+      None
+    };
 
     let resolver = HTTPHrnResolver::new();
     let runtime = create_current_thread_runtime().map_err(lnurl_error_to_napi)?;
@@ -713,7 +791,15 @@ impl MdkNode {
       }
     };
 
-    if let Err(err) = self.node.stop() {
+    if let Some(wait_secs) = wait_for_payment_secs {
+      let wait_result = self.wait_for_payment_outcome(&payment_id, wait_secs);
+
+      if let Err(err) = self.node.stop() {
+        eprintln!("[lightning-js] Failed to stop node after lnurl payment wait: {err}");
+      }
+
+      wait_result?;
+    } else if let Err(err) = self.node.stop() {
       eprintln!("[lightning-js] Failed to stop node after successful lnurl payment: {err}");
     }
 
