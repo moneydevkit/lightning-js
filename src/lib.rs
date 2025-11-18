@@ -27,7 +27,7 @@ use ldk_node::{
   bitcoin::{
     hashes::{sha256, Hash},
     secp256k1::PublicKey,
-    Network,
+    Address, Network,
   },
   generate_entropy_mnemonic,
   lightning::ln::channelmanager::PaymentId,
@@ -233,6 +233,15 @@ pub struct ReceivedPayment {
 }
 
 #[napi(object)]
+pub struct NodeBalances {
+  pub channel_balance_sats: i64,
+  pub total_onchain_balance_sats: i64,
+  pub spendable_onchain_balance_sats: i64,
+  pub total_anchor_channels_reserve_sats: i64,
+  pub total_lightning_balance_sats: i64,
+}
+
+#[napi(object)]
 pub struct NodeChannel {
   pub channel_id: String,
   pub counterparty_node_id: String,
@@ -345,7 +354,7 @@ impl MdkNode {
   }
 
   #[napi]
-  pub fn get_balance(&self) -> i64 {
+  pub fn get_balance(&self) -> napi::Result<NodeBalances> {
     if let Err(err) = self.node.start() {
       eprintln!("[lightning-js] Failed to start node via get_balance: {err}");
       panic!("failed to start node: {err}");
@@ -369,12 +378,20 @@ impl MdkNode {
         acc.saturating_add(channel.outbound_capacity_msat)
       });
 
+    let balances = self.node.list_balances();
+
     if let Err(err) = self.node.stop() {
       eprintln!("[lightning-js] Failed to stop node via stop() in get_balance: {err}");
       panic!("failed to stop node: {err}");
     }
 
-    u64_to_i64(total_outbound_msat / 1_000)
+    Ok(NodeBalances {
+      channel_balance_sats: u64_to_i64(total_outbound_msat / 1_000),
+      total_onchain_balance_sats: u64_to_i64(balances.total_onchain_balance_sats),
+      spendable_onchain_balance_sats: u64_to_i64(balances.spendable_onchain_balance_sats),
+      total_anchor_channels_reserve_sats: u64_to_i64(balances.total_anchor_channels_reserve_sats),
+      total_lightning_balance_sats: u64_to_i64(balances.total_lightning_balance_sats),
+    })
   }
 
   #[napi]
@@ -619,6 +636,95 @@ impl MdkNode {
       .unwrap();
 
     invoice_to_payment_metadata(bolt11)
+  }
+
+  #[napi]
+  pub fn close_all_channels(&self) {
+    if let Err(err) = self.node.start() {
+      eprintln!("[lightning-js] Failed to start node for get_invoice: {err}");
+      panic!("failed to start node for get_invoice: {err}");
+    }
+
+    if let Err(err) = self.node.sync_wallets() {
+      eprintln!("[lightning-js] Failed to sync wallets: {err}");
+      panic!("failed to sync wallets: {err}");
+    }
+
+    let channels_to_close = self.node.list_channels();
+
+    for channel in channels_to_close {
+      if let Err(err) = self
+        .node
+        .close_channel(&channel.user_channel_id, channel.counterparty_node_id)
+      {
+        eprintln!(
+          "[lightning-js] Failed to close channel {}: {err}",
+          channel.channel_id
+        );
+      }
+    }
+
+    if let Err(err) = self.node.stop() {
+      eprintln!("[lightning-js] Failed to stop node after get_invoice: {err}");
+    }
+  }
+
+  #[napi]
+  pub fn send_on_chain(&self, address: String, amount_sats: i64) -> napi::Result<()> {
+    let amount_sat_u64 = u64::try_from(amount_sats).map_err(|_| {
+      napi::Error::new(
+        Status::InvalidArg,
+        "amount must be representable as an unsigned 64-bit value".to_string(),
+      )
+    })?;
+
+    let address = Address::from_str(&address)
+      .map_err(|_| napi::Error::new(Status::InvalidArg, "invalid bitcoin address".to_string()))?
+      .require_network(self.network)
+      .map_err(|_| {
+        napi::Error::new(
+          Status::InvalidArg,
+          format!(
+            "address network does not match node network {}",
+            self.network
+          ),
+        )
+      })?;
+
+    if let Err(err) = self.node.start() {
+      eprintln!("[lightning-js] Failed to start node for get_invoice: {err}");
+      panic!("failed to start node for get_invoice: {err}");
+    }
+
+    if let Err(err) = self.node.sync_wallets() {
+      eprintln!("[lightning-js] Failed to sync wallets: {err}");
+      panic!("failed to sync wallets: {err}");
+    }
+
+    let balance = self.node.list_balances().spendable_onchain_balance_sats;
+
+    if balance < amount_sat_u64 {
+      eprintln!(
+        "[lightning-js] Insufficient on-chain balance: have {}, need {}",
+        balance, amount_sats
+      );
+      panic!("insufficient on-chain balance");
+    }
+
+    if let Err(err) = self
+      .node
+      .onchain_payment()
+      .send_to_address(&address, amount_sat_u64, None)
+    {
+      eprintln!("[lightning-js] Failed to send on-chain: {err}");
+      panic!("failed to send on-chain: {err}");
+    }
+
+    if let Err(err) = self.node.stop() {
+      eprintln!("[lightning-js] Failed to stop node after send_on_chain: {err}");
+    }
+
+    Ok(())
   }
 
   fn wait_for_payment_outcome(
