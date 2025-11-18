@@ -9,6 +9,7 @@ use std::{
     atomic::{AtomicU8, Ordering},
     Arc, OnceLock, RwLock,
   },
+  time::{Duration, Instant},
 };
 
 use bitcoin_payment_instructions::{
@@ -29,6 +30,7 @@ use ldk_node::{
     Network,
   },
   generate_entropy_mnemonic,
+  lightning::ln::channelmanager::PaymentId,
   lightning::{
     ln::msgs::SocketAddress,
     offers::offer::{Amount, Offer},
@@ -619,8 +621,99 @@ impl MdkNode {
     invoice_to_payment_metadata(bolt11)
   }
 
+  fn wait_for_payment_outcome(
+    &self,
+    payment_id: &PaymentId,
+    timeout_secs: u64,
+  ) -> napi::Result<()> {
+    eprintln!(
+      "[lightning-js] wait_for_payment_outcome start payment_id={} timeout_secs={}",
+      bytes_to_hex(&payment_id.0),
+      timeout_secs
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+
+    loop {
+      if let Some(event) = self.node.next_event() {
+        eprintln!(
+          "[lightning-js] wait_for_payment_outcome saw event: {:?}",
+          event
+        );
+        match event {
+          Event::PaymentSuccessful {
+            payment_id: event_payment_id,
+            ..
+          } => {
+            self
+              .node
+              .event_handled()
+              .map_err(|err| napi::Error::new(Status::GenericFailure, err.to_string()))?;
+
+            if event_payment_id == Some(*payment_id) {
+              eprintln!("[lightning-js] wait_for_payment_outcome success");
+              return Ok(());
+            }
+          }
+          Event::PaymentFailed {
+            payment_id: Some(event_payment_id),
+            reason,
+            ..
+          } => {
+            self
+              .node
+              .event_handled()
+              .map_err(|err| napi::Error::new(Status::GenericFailure, err.to_string()))?;
+
+            if event_payment_id == *payment_id {
+              let reason_str = reason
+                .map(|r| format!("{r:?}"))
+                .unwrap_or_else(|| "unknown reason".to_string());
+
+              eprintln!("[lightning-js] wait_for_payment_outcome failure reason={reason_str}");
+              return Err(napi::Error::new(
+                Status::GenericFailure,
+                format!("lnurl payment failed: {reason_str}"),
+              ));
+            }
+          }
+          _ => {
+            eprintln!(
+              "[lightning-js] wait_for_payment_outcome ignoring event: {:?}",
+              event
+            );
+            self
+              .node
+              .event_handled()
+              .map_err(|err| napi::Error::new(Status::GenericFailure, err.to_string()))?;
+          }
+        }
+      }
+
+      if Instant::now() >= deadline {
+        eprintln!(
+          "[lightning-js] Timed out waiting {timeout_secs}s for lnurl payment confirmation"
+        );
+        eprintln!("[lightning-js] wait_for_payment_outcome finished with timeout");
+        return Ok(());
+      }
+
+      std::thread::sleep(Duration::from_millis(50));
+    }
+  }
+
   #[napi]
-  pub fn pay_lnurl(&self, lnurl: String, amount_msat: i64) -> napi::Result<String> {
+  pub fn pay_lnurl(
+    &self,
+    lnurl: String,
+    amount_msat: i64,
+    wait_for_payment_secs: Option<i64>,
+  ) -> napi::Result<String> {
+    eprintln!(
+      "[lightning-js] pay_lnurl called lnurl={} amount_msat={} wait_for_payment_secs={:?}",
+      lnurl, amount_msat, wait_for_payment_secs
+    );
+
     if amount_msat <= 0 {
       return Err(napi::Error::new(
         Status::InvalidArg,
@@ -642,8 +735,19 @@ impl MdkNode {
       )
     })?;
 
+    let wait_for_payment_secs = wait_for_payment_secs.unwrap_or(0);
+    let wait_for_payment_secs = if wait_for_payment_secs > 0 {
+      Some(wait_for_payment_secs as u64)
+    } else {
+      None
+    };
+    eprintln!(
+      "[lightning-js] pay_lnurl wait_for_payment_secs_normalized={wait_for_payment_secs:?}"
+    );
+
     let resolver = HTTPHrnResolver::new();
     let runtime = create_current_thread_runtime().map_err(lnurl_error_to_napi)?;
+    eprintln!("[lightning-js] pay_lnurl resolving lnurl invoice");
     let invoice = resolve_lnurl_invoice_with_runtime(
       &runtime,
       &resolver,
@@ -652,7 +756,12 @@ impl MdkNode {
       self.network,
     )
     .map_err(lnurl_error_to_napi)?;
+    eprintln!(
+      "[lightning-js] pay_lnurl resolved invoice payment_hash={}",
+      invoice.payment_hash()
+    );
 
+    eprintln!("[lightning-js] pay_lnurl starting node");
     self.node.start().map_err(|error| {
       napi::Error::new(
         Status::GenericFailure,
@@ -660,6 +769,7 @@ impl MdkNode {
       )
     })?;
 
+    eprintln!("[lightning-js] pay_lnurl syncing wallets");
     if let Err(err) = self.node.sync_wallets() {
       eprintln!("[lightning-js] Failed to sync wallets: {err}");
       panic!("failed to sync wallets: {err}");
@@ -672,6 +782,7 @@ impl MdkNode {
       .filter(|channel| channel.is_channel_ready)
       .map(|channel| channel.outbound_capacity_msat)
       .sum();
+    eprintln!("[lightning-js] pay_lnurl available_balance_msat={available_balance_msat}");
 
     if available_balance_msat == 0 {
       if let Err(err) = self.node.stop() {
@@ -703,6 +814,7 @@ impl MdkNode {
     let payment_id = match self.node.bolt11_payment().send(&invoice, None) {
       Ok(payment_id) => payment_id,
       Err(error) => {
+        eprintln!("[lightning-js] pay_lnurl send error: {error}");
         if let Err(stop_error) = self.node.stop() {
           eprintln!("[lightning-js] Failed to stop node after lnurl send error: {stop_error}");
         }
@@ -712,11 +824,28 @@ impl MdkNode {
         ));
       }
     };
+    eprintln!(
+      "[lightning-js] pay_lnurl send ok payment_id={}",
+      bytes_to_hex(&payment_id.0)
+    );
 
-    if let Err(err) = self.node.stop() {
+    if let Some(wait_secs) = wait_for_payment_secs {
+      eprintln!("[lightning-js] pay_lnurl waiting for payment outcome wait_secs={wait_secs}");
+      let wait_result = self.wait_for_payment_outcome(&payment_id, wait_secs);
+
+      if let Err(err) = self.node.stop() {
+        eprintln!("[lightning-js] Failed to stop node after lnurl payment wait: {err}");
+      }
+
+      wait_result?;
+    } else if let Err(err) = self.node.stop() {
       eprintln!("[lightning-js] Failed to stop node after successful lnurl payment: {err}");
     }
 
+    eprintln!(
+      "[lightning-js] pay_lnurl returning payment_id={}",
+      bytes_to_hex(&payment_id.0)
+    );
     Ok(bytes_to_hex(&payment_id.0))
   }
 
