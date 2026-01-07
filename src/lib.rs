@@ -1096,7 +1096,9 @@ impl MdkNode {
     );
 
     if let Some(wait_secs) = wait_for_payment_secs {
-      eprintln!("[lightning-js] pay_bolt12_offer waiting for payment outcome wait_secs={wait_secs}");
+      eprintln!(
+        "[lightning-js] pay_bolt12_offer waiting for payment outcome wait_secs={wait_secs}"
+      );
       let wait_result = self.wait_for_payment_outcome(&payment_id, wait_secs);
 
       if let Err(err) = self.node.stop() {
