@@ -1,6 +1,6 @@
 {
   "name": "@moneydevkit/lightning-js-darwin-arm64",
-  "version": "0.1.55",
+  "version": "0.1.56",
   "os": [
     "darwin"
   ],
