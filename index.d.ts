@@ -60,7 +60,7 @@ export declare class MdkNode {
     description: string,
     expirySecs: number,
   ): PaymentMetadata
-  payLnurl(lnurl: string, amountMsat: number, waitForPaymentSecs?: number): string
+  payLnurl(lnurl: string, amountMsat: number, waitForPaymentSecs?: number | undefined | null): string
   payBolt11(bolt11Invoice: string): string
-  payBolt12Offer(bolt12OfferString: string, amountMsat: number): string
+  payBolt12Offer(bolt12OfferString: string, amountMsat: number, waitForPaymentSecs?: number | undefined | null): string
 }
