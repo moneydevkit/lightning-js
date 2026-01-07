@@ -934,7 +934,17 @@ impl MdkNode {
     &self,
     bolt12_offer_string: String,
     amount_msat: i64,
+    wait_for_payment_secs: Option<i64>,
   ) -> napi::Result<String> {
+    eprintln!(
+      "[lightning-js] pay_bolt12_offer called amount_msat={} wait_for_payment_secs={:?}",
+      amount_msat, wait_for_payment_secs
+    );
+    eprintln!(
+      "[lightning-js] pay_bolt12_offer bolt12_offer={}",
+      bolt12_offer_string
+    );
+
     if amount_msat <= 0 {
       return Err(napi::Error::new(
         Status::InvalidArg,
@@ -949,9 +959,28 @@ impl MdkNode {
       )
     })?;
 
+    let wait_for_payment_secs = wait_for_payment_secs.unwrap_or(0);
+    let wait_for_payment_secs = if wait_for_payment_secs > 0 {
+      Some(wait_for_payment_secs as u64)
+    } else {
+      None
+    };
+    eprintln!(
+      "[lightning-js] pay_bolt12_offer wait_for_payment_secs_normalized={wait_for_payment_secs:?}"
+    );
+
     let bolt12_offer = Offer::from_str(&bolt12_offer_string)
       .map_err(|_| napi::Error::new(Status::InvalidArg, "invalid bolt12 offer".to_string()))?;
 
+    eprintln!(
+      "[lightning-js] pay_bolt12_offer parsed offer: id={} issuer_pubkey={:?} description={:?} amount={:?}",
+      bolt12_offer.id(),
+      bolt12_offer.issuer_signing_pubkey(),
+      bolt12_offer.description(),
+      bolt12_offer.amount()
+    );
+
+    eprintln!("[lightning-js] pay_bolt12_offer starting node");
     self.node.start().map_err(|error| {
       napi::Error::new(
         Status::GenericFailure,
@@ -959,18 +988,29 @@ impl MdkNode {
       )
     })?;
 
+    eprintln!("[lightning-js] pay_bolt12_offer syncing wallets");
     if let Err(err) = self.node.sync_wallets() {
       eprintln!("[lightning-js] Failed to sync wallets: {err}");
       panic!("failed to sync wallets: {err}");
     }
+    eprintln!("[lightning-js] pay_bolt12_offer wallet sync complete");
 
-    let available_balance_msat: u64 = self
-      .node
-      .list_channels()
-      .into_iter()
+    let channels = self.node.list_channels();
+    let ready_channels: Vec<_> = channels
+      .iter()
       .filter(|channel| channel.is_channel_ready)
+      .collect();
+    let available_balance_msat: u64 = ready_channels
+      .iter()
       .map(|channel| channel.outbound_capacity_msat)
       .sum();
+
+    eprintln!(
+      "[lightning-js] pay_bolt12_offer channels: total={} ready={} available_balance_msat={}",
+      channels.len(),
+      ready_channels.len(),
+      available_balance_msat
+    );
 
     if available_balance_msat == 0 {
       if let Err(err) = self.node.stop() {
@@ -998,6 +1038,11 @@ impl MdkNode {
       None => amount_msat_u64,
     };
 
+    eprintln!(
+      "[lightning-js] pay_bolt12_offer amount_to_send_msat={}",
+      amount_to_send_msat
+    );
+
     if amount_to_send_msat == 0 {
       if let Err(err) = self.node.stop() {
         eprintln!("[lightning-js] Failed to stop node after zero-amount bolt12 offer: {err}");
@@ -1021,6 +1066,12 @@ impl MdkNode {
       ));
     }
 
+    eprintln!(
+      "[lightning-js] pay_bolt12_offer sending payment: offer_id={} amount_msat={}",
+      bolt12_offer.id(),
+      amount_to_send_msat
+    );
+
     let payment_id = match self.node.bolt12_payment().send_using_amount(
       &bolt12_offer,
       amount_to_send_msat,
@@ -1029,6 +1080,7 @@ impl MdkNode {
     ) {
       Ok(payment_id) => payment_id,
       Err(error) => {
+        eprintln!("[lightning-js] pay_bolt12_offer send error: {error}");
         if let Err(stop_error) = self.node.stop() {
           eprintln!("[lightning-js] Failed to stop node after bolt12 send error: {stop_error}");
         }
@@ -1038,18 +1090,29 @@ impl MdkNode {
         ));
       }
     };
+    eprintln!(
+      "[lightning-js] pay_bolt12_offer send ok payment_id={}",
+      bytes_to_hex(&payment_id.0)
+    );
 
-    if let Err(err) = self.node.stop() {
+    if let Some(wait_secs) = wait_for_payment_secs {
+      eprintln!("[lightning-js] pay_bolt12_offer waiting for payment outcome wait_secs={wait_secs}");
+      let wait_result = self.wait_for_payment_outcome(&payment_id, wait_secs);
+
+      if let Err(err) = self.node.stop() {
+        eprintln!("[lightning-js] Failed to stop node after bolt12 payment wait: {err}");
+      }
+
+      wait_result?;
+    } else if let Err(err) = self.node.stop() {
       eprintln!("[lightning-js] Failed to stop node after successful bolt12 payment: {err}");
     }
 
-    let payment_id_bytes = payment_id.0;
-    let mut payment_id_hex = String::with_capacity(payment_id_bytes.len() * 2);
-    for byte in payment_id_bytes {
-      write!(&mut payment_id_hex, "{:02x}", byte).unwrap();
-    }
-
-    Ok(payment_id_hex)
+    eprintln!(
+      "[lightning-js] pay_bolt12_offer returning payment_id={}",
+      bytes_to_hex(&payment_id.0)
+    );
+    Ok(bytes_to_hex(&payment_id.0))
   }
 }
 
