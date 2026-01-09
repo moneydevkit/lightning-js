@@ -11,10 +11,10 @@ bitcoin-payment-instructions = { version = "0.5.0", default-features = false, fe
   "http",
 ] }
 # Branch: https://github.com/moneydevkit/ldk-node/commits/lsp-0.6.2/
-ldk-node = { default-features = false, git = "https://github.com/moneydevkit/ldk-node.git", rev = "7dc77ccc5e841dbd3e66a42ac529a30702035774" }
-napi = { version = "2", features = ["napi4"] }
+ldk-node    = { default-features = false, git = "https://github.com/moneydevkit/ldk-node.git", rev = "b70720fa63eb39e7f588a672d0a5faf7729b7a7d" }
+napi        = { version = "2", features = ["napi4"] }
 napi-derive = "2"
-tokio = { version = "1", features = ["rt-multi-thread"] }
+tokio       = { version = "1", features = ["rt-multi-thread"] }
 # Temporary pin: ldk-node pulls in home 0.5.12 which needs edition2024 cargo
 home = "=0.5.11"
 # Pin ICU crates to keep MSRV at 1.82.0

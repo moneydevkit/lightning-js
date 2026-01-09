@@ -46,6 +46,13 @@ export declare class MdkNode {
   syncWallets(): void
   getBalance(): number
   listChannels(): Array<NodeChannel>
+  /**
+   * Manually sync the RGS snapshot.
+   *
+   * If `do_full_sync` is true, the RGS snapshot will be updated from scratch. Otherwise, the
+   * snapshot will be updated from the last known sync point.
+   */
+  syncRgs(doFullSync: boolean): number
   receivePayment(minThresholdMs: number, quietThresholdMs: number): Array<ReceivedPayment>
   getInvoice(amount: number, description: string, expirySecs: number): PaymentMetadata
   getInvoiceWithScid(
