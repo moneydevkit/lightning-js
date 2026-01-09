@@ -1,6 +1,6 @@
 {
   "name": "@moneydevkit/lightning-js-android-arm64",
-  "version": "0.1.57",
+  "version": "0.1.58",
   "os": [
     "android"
   ],
