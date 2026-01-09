@@ -11,7 +11,7 @@ bitcoin-payment-instructions = { version = "0.5.0", default-features = false, fe
   "http",
 ] }
 # Branch: https://github.com/moneydevkit/ldk-node/commits/lsp-0.6.2/
-ldk-node    = { default-features = false, git = "https://github.com/moneydevkit/ldk-node.git", rev = "b70720fa63eb39e7f588a672d0a5faf7729b7a7d" }
+ldk-node    = { default-features = false, git = "https://github.com/moneydevkit/ldk-node.git", rev = "fb859bcd589174d3c61617154b317e7b835bc620" }
 napi        = { version = "2", features = ["napi4"] }
 napi-derive = "2"
 tokio       = { version = "1", features = ["rt-multi-thread"] }
