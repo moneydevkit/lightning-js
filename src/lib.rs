@@ -407,6 +407,23 @@ impl MdkNode {
       .collect()
   }
 
+  /// Manually sync the RGS snapshot.
+  ///
+  /// If `do_full_sync` is true, the RGS snapshot will be updated from scratch. Otherwise, the
+  /// snapshot will be updated from the last known sync point.
+  #[napi]
+  pub fn sync_rgs(&self, do_full_sync: bool) -> Result<u32, napi::Error> {
+    tokio::task::block_in_place(|| {
+      tokio::runtime::Handle::current().block_on(async {
+        self
+          .node
+          .sync_rgs(do_full_sync)
+          .await
+          .map_err(|e| napi::Error::from_reason(format!("Failed to sync RGS: {}", e)))
+      })
+    })
+  }
+
   #[napi]
   pub fn receive_payment(
     &self,
@@ -987,6 +1004,19 @@ impl MdkNode {
         format!("failed to start node prior to paying offer: {error}"),
       )
     })?;
+
+    // Full RGS sync to get node announcements (addresses/features) needed for BOLT12
+    eprintln!("[lightning-js] pay_bolt12_offer doing full RGS sync");
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime for RGS sync");
+    rt.block_on(async {
+      match self.node.sync_rgs(true).await {
+        Ok(ts) => eprintln!(
+          "[lightning-js] pay_bolt12_offer RGS sync complete, timestamp={}",
+          ts
+        ),
+        Err(e) => eprintln!("[lightning-js] pay_bolt12_offer RGS sync failed: {}", e),
+      }
+    });
 
     eprintln!("[lightning-js] pay_bolt12_offer syncing wallets");
     if let Err(err) = self.node.sync_wallets() {
