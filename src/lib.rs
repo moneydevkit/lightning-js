@@ -413,14 +413,14 @@ impl MdkNode {
   /// snapshot will be updated from the last known sync point.
   #[napi]
   pub fn sync_rgs(&self, do_full_sync: bool) -> Result<u32, napi::Error> {
-    tokio::task::block_in_place(|| {
-      tokio::runtime::Handle::current().block_on(async {
-        self
-          .node
-          .sync_rgs(do_full_sync)
-          .await
-          .map_err(|e| napi::Error::from_reason(format!("Failed to sync RGS: {}", e)))
-      })
+    let rt = tokio::runtime::Runtime::new()
+      .map_err(|e| napi::Error::from_reason(format!("Failed to create runtime: {}", e)))?;
+    rt.block_on(async {
+      self
+        .node
+        .sync_rgs(do_full_sync)
+        .await
+        .map_err(|e| napi::Error::from_reason(format!("Failed to sync RGS: {}", e)))
     })
   }
 
