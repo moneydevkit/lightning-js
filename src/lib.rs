@@ -227,6 +227,7 @@ pub struct PaymentMetadata {
   pub scid: String,
 }
 
+#[derive(Clone)]
 #[napi(object)]
 pub struct ReceivedPayment {
   pub payment_hash: String,
@@ -545,6 +546,135 @@ impl MdkNode {
     }
 
     received_payments
+  }
+
+  /// Receive payments with an immediate callback for each payment received.
+  ///
+  /// This method behaves like `receive_payment` but fires a callback immediately
+  /// when each payment is received, allowing for instant customer confirmation
+  /// while the node continues to run for the full timeout period.
+  #[napi]
+  pub fn receive_payment_with_callback(
+    &self,
+    _env: Env,
+    min_threshold_ms: i64,
+    quiet_threshold_ms: i64,
+    on_payment_received: JsFunction,
+  ) -> napi::Result<Vec<ReceivedPayment>> {
+    // Create threadsafe function for callback
+    let tsfn: ThreadsafeFunction<ReceivedPayment> = on_payment_received
+      .create_threadsafe_function(0, |ctx| {
+        let env = ctx.env;
+        let data: ReceivedPayment = ctx.value;
+        let mut obj = env.create_object()?;
+        obj.set_named_property("paymentHash", env.create_string(&data.payment_hash)?)?;
+        obj.set_named_property("amount", env.create_int64(data.amount)?)?;
+        Ok(vec![obj.into_unknown()])
+      })?;
+
+    let mut received_payments = vec![];
+
+    if let Err(err) = self.node.start() {
+      eprintln!("[lightning-js] Failed to start node in receive_payment_with_callback: {err}");
+      return Ok(received_payments);
+    }
+
+    if let Err(err) = self.node.sync_wallets() {
+      eprintln!("[lightning-js] Failed to sync wallets: {err}");
+      panic!("failed to sync wallets: {err}");
+    }
+
+    let start_sync_at = std::time::Instant::now();
+    let mut last_event_time = start_sync_at;
+
+    loop {
+      let now = std::time::Instant::now();
+
+      let total_time_elapsed = now.duration_since(start_sync_at).as_millis() as i64;
+      let quiet_time_elapsed = now.duration_since(last_event_time).as_millis() as i64;
+
+      if total_time_elapsed >= min_threshold_ms && quiet_time_elapsed >= quiet_threshold_ms {
+        break;
+      }
+
+      if let Some(event) = self.node.next_event() {
+        eprintln!("[lightning-js] Event: {event:?}");
+
+        match &event {
+          Event::PaymentFailed {
+            payment_id,
+            payment_hash,
+            reason,
+          } => {
+            let payment_id_hex = payment_id
+              .as_ref()
+              .map(|id| bytes_to_hex(&id.0))
+              .unwrap_or_else(|| "None".to_string());
+            let payment_hash_hex = payment_hash
+              .as_ref()
+              .map(|hash| bytes_to_hex(&hash.0))
+              .unwrap_or_else(|| "None".to_string());
+            let reason_str = reason
+              .as_ref()
+              .map(|r| format!("{r:?}"))
+              .unwrap_or_else(|| "Unknown".to_string());
+
+            eprintln!(
+              "[lightning-js] PaymentFailed payment_id={payment_id_hex} payment_hash={payment_hash_hex} reason={reason_str}",
+            );
+          }
+          Event::PaymentClaimable {
+            payment_hash,
+            claimable_amount_msat,
+            claim_deadline,
+            ..
+          } => {
+            let payment_hash_hex = bytes_to_hex(&payment_hash.0);
+            let claim_deadline_str = match claim_deadline {
+              Some(deadline) => deadline.to_string(),
+              None => "None".to_string(),
+            };
+
+            eprintln!(
+              "[lightning-js] PaymentClaimable payment_hash={payment_hash_hex} claimable_amount_msat={claimable_amount_msat} claim_deadline={claim_deadline_str}",
+            );
+          }
+          Event::PaymentReceived {
+            payment_hash,
+            amount_msat,
+            ..
+          } => {
+            let payment_hash_hex = bytes_to_hex(&payment_hash.0);
+            eprintln!(
+              "[lightning-js] PaymentReceived payment_hash={payment_hash_hex} amount_msat={amount_msat}",
+            );
+
+            // Fire callback IMMEDIATELY
+            let payment = ReceivedPayment {
+              payment_hash: payment_hash_hex.clone(),
+              amount: *amount_msat as i64,
+            };
+            tsfn.call(Ok(payment.clone()), ThreadsafeFunctionCallMode::Blocking);
+
+            received_payments.push(payment);
+          }
+          _ => {}
+        }
+
+        if let Err(err) = self.node.event_handled() {
+          eprintln!("[lightning-js] Error while marking event handled: {err}");
+        }
+        last_event_time = now;
+      }
+
+      std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    if let Err(err) = self.node.stop() {
+      eprintln!("[lightning-js] Failed to stop node after receive_payment_with_callback: {err}");
+    }
+
+    Ok(received_payments)
   }
 
   #[napi]
