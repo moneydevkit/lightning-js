@@ -29,6 +29,7 @@ use ldk_node::{
     secp256k1::PublicKey,
     Network,
   },
+  config::Config,
   generate_entropy_mnemonic,
   lightning::ln::channelmanager::PaymentId,
   lightning::{
@@ -267,7 +268,15 @@ impl MdkNode {
     let lsp_node_id = PublicKey::from_str(&options.lsp_node_id).unwrap();
     let lsp_address = SocketAddress::from_str(&options.lsp_address).unwrap();
 
-    let mut builder = Builder::new();
+    // Create a config with anchor channels disabled
+    // This prevents the node from advertising anchor channel support,
+    // so the LSP will only attempt to open non-anchor channels
+    let config = Config {
+      anchor_channels_config: None,
+      ..Config::default()
+    };
+
+    let mut builder = Builder::from_config(config);
     builder.set_network(network);
     builder.set_chain_source_esplora(options.esplora_url, None);
     builder.set_gossip_source_rgs(options.rgs_url);
