@@ -27,3 +27,9 @@ lto = true
 [dev-dependencies]
 bitcoin           = "0.32"
 lightning-invoice = "0.33.2"
+
+# Patch lightning crates so bitcoin-payment-instructions uses the same versions as ldk-node
+# This avoids type mismatches between the two crates' Bolt11Invoice/Offer types
+[patch.crates-io]
+lightning = { git = "https://github.com/moneydevkit/rust-lightning", rev = "42bad4fd3c908958b96b6b70ed63bd6aa3cbaf5f" }
+lightning-invoice = { git = "https://github.com/moneydevkit/rust-lightning", rev = "42bad4fd3c908958b96b6b70ed63bd6aa3cbaf5f" }

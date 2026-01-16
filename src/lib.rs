@@ -1173,6 +1173,385 @@ impl MdkNode {
     );
     Ok(bytes_to_hex(&payment_id.0))
   }
+
+  /// Universal payout method that handles any form of Lightning payment instruction.
+  ///
+  /// This method accepts:
+  /// - Bolt11 invoices (with or without amount)
+  /// - Bolt12 offers
+  /// - BIP-353 addresses (e.g., user@domain) that resolve to Bolt12 offers or LNURL
+  /// - LNURLp endpoints
+  /// - Lightning Addresses (e.g., user@domain)
+  ///
+  /// The `amount_msat` parameter is required for instructions without a fixed amount
+  /// (variable-amount invoices, offers without amounts, LNURL, etc.).
+  /// For fixed-amount instructions, the `amount_msat` is ignored if provided.
+  ///
+  /// Returns the payment ID as a hex string on success.
+  #[napi]
+  pub fn pay_out(
+    &self,
+    instruction: String,
+    amount_msat: Option<i64>,
+    wait_for_payment_secs: Option<i64>,
+  ) -> napi::Result<String> {
+    eprintln!(
+      "[lightning-js] pay_out called instruction={} amount_msat={:?} wait_for_payment_secs={:?}",
+      instruction, amount_msat, wait_for_payment_secs
+    );
+
+    let wait_for_payment_secs = wait_for_payment_secs.unwrap_or(0);
+    let wait_for_payment_secs = if wait_for_payment_secs > 0 {
+      Some(wait_for_payment_secs as u64)
+    } else {
+      None
+    };
+    eprintln!(
+      "[lightning-js] pay_out wait_for_payment_secs_normalized={wait_for_payment_secs:?}"
+    );
+
+    // Convert optional amount
+    let requested_amount = match amount_msat {
+      Some(amt) if amt <= 0 => return Err(payout_error_to_napi(PayOutError::AmountZero)),
+      Some(amt) => {
+        let amt_u64 = u64::try_from(amt).map_err(|_| payout_error_to_napi(PayOutError::AmountTooLarge))?;
+        Some(
+          InstructionAmount::from_milli_sats(amt_u64)
+            .map_err(|_| payout_error_to_napi(PayOutError::AmountTooLarge))?,
+        )
+      }
+      None => None,
+    };
+
+    let resolver = HTTPHrnResolver::new();
+    let runtime = create_current_thread_runtime().map_err(|e| {
+      payout_error_to_napi(PayOutError::RuntimeInit(e.to_string()))
+    })?;
+
+    eprintln!("[lightning-js] pay_out parsing payment instructions");
+    let payment_instructions = runtime
+      .block_on(PaymentInstructions::parse(
+        &instruction,
+        self.network,
+        &resolver,
+        true, // supports_proof_of_payment_callbacks
+      ))
+      .map_err(|e| payout_error_to_napi(PayOutError::Parse(format!("{e:?}"))))?;
+
+    eprintln!("[lightning-js] pay_out parsed instructions: {:?}", match &payment_instructions {
+      PaymentInstructions::FixedAmount(_) => "FixedAmount",
+      PaymentInstructions::ConfigurableAmount(_) => "ConfigurableAmount",
+    });
+
+    // Resolve to fixed amount if needed
+    let fixed_instructions = match payment_instructions {
+      PaymentInstructions::FixedAmount(fixed) => fixed,
+      PaymentInstructions::ConfigurableAmount(configurable) => {
+        let amount = requested_amount
+          .ok_or_else(|| payout_error_to_napi(PayOutError::AmountRequired))?;
+        runtime
+          .block_on(configurable.set_amount(amount, &resolver))
+          .map_err(|e| payout_error_to_napi(PayOutError::Finalization(e)))?
+      }
+    };
+
+    // Find a Lightning payment method (prefer Bolt11, then Bolt12)
+    let mut bolt11_invoice: Option<&Bolt11Invoice> = None;
+    let mut bolt12_offer: Option<&Offer> = None;
+
+    for method in fixed_instructions.methods() {
+      match method {
+        PaymentMethod::LightningBolt11(invoice) => {
+          bolt11_invoice = Some(invoice);
+          break; // Prefer Bolt11 if available
+        }
+        PaymentMethod::LightningBolt12(offer) => {
+          if bolt12_offer.is_none() {
+            bolt12_offer = Some(offer);
+          }
+        }
+        PaymentMethod::OnChain(_) => {
+          // Skip on-chain methods - we only handle Lightning
+        }
+      }
+    }
+
+    // Determine the amount to send
+    let amount_msat_u64 = if let Some(ln_amt) = fixed_instructions.ln_payment_amount() {
+      ln_amt.milli_sats()
+    } else if let Some(amt) = requested_amount {
+      amt.milli_sats()
+    } else {
+      return Err(payout_error_to_napi(PayOutError::AmountRequired));
+    };
+
+    eprintln!("[lightning-js] pay_out amount_msat_u64={}", amount_msat_u64);
+
+    // Execute the payment based on the available method
+    if let Some(invoice) = bolt11_invoice {
+      self.pay_out_bolt11(invoice, amount_msat_u64, wait_for_payment_secs)
+    } else if let Some(offer) = bolt12_offer {
+      self.pay_out_bolt12(offer, amount_msat_u64, wait_for_payment_secs)
+    } else {
+      Err(payout_error_to_napi(PayOutError::NoLightningMethod))
+    }
+  }
+
+  /// Internal method to pay a Bolt11 invoice.
+  fn pay_out_bolt11(
+    &self,
+    invoice: &Bolt11Invoice,
+    amount_msat: u64,
+    wait_for_payment_secs: Option<u64>,
+  ) -> napi::Result<String> {
+    eprintln!(
+      "[lightning-js] pay_out_bolt11 payment_hash={} amount_msat={}",
+      invoice.payment_hash(),
+      amount_msat
+    );
+
+    // Determine if we need to use send_using_amount (for amountless invoices)
+    let invoice_has_amount = invoice.amount_milli_satoshis().is_some();
+
+    eprintln!("[lightning-js] pay_out_bolt11 starting node");
+    self.node.start().map_err(|error| {
+      payout_error_to_napi(PayOutError::NodeStart(error.to_string()))
+    })?;
+
+    eprintln!("[lightning-js] pay_out_bolt11 syncing wallets");
+    if let Err(err) = self.node.sync_wallets() {
+      if let Err(stop_err) = self.node.stop() {
+        eprintln!("[lightning-js] Failed to stop node after wallet sync error: {stop_err}");
+      }
+      return Err(payout_error_to_napi(PayOutError::WalletSync(err.to_string())));
+    }
+
+    let available_balance_msat: u64 = self
+      .node
+      .list_channels()
+      .into_iter()
+      .filter(|channel| channel.is_channel_ready)
+      .map(|channel| channel.outbound_capacity_msat)
+      .sum();
+    eprintln!("[lightning-js] pay_out_bolt11 available_balance_msat={}", available_balance_msat);
+
+    if available_balance_msat == 0 {
+      if let Err(err) = self.node.stop() {
+        eprintln!("[lightning-js] Failed to stop node after checking outbound capacity: {err}");
+      }
+      return Err(payout_error_to_napi(PayOutError::NoOutboundCapacity));
+    }
+
+    if available_balance_msat < amount_msat {
+      if let Err(err) = self.node.stop() {
+        eprintln!("[lightning-js] Failed to stop node after insufficient outbound capacity: {err}");
+      }
+      return Err(payout_error_to_napi(PayOutError::InsufficientCapacity {
+        required_msat: amount_msat,
+        available_msat: available_balance_msat,
+      }));
+    }
+
+    let payment_id = if invoice_has_amount {
+      // Invoice has a fixed amount, use regular send
+      match self.node.bolt11_payment().send(invoice, None) {
+        Ok(payment_id) => payment_id,
+        Err(error) => {
+          eprintln!("[lightning-js] pay_out_bolt11 send error: {error}");
+          if let Err(stop_error) = self.node.stop() {
+            eprintln!("[lightning-js] Failed to stop node after send error: {stop_error}");
+          }
+          return Err(payout_error_to_napi(PayOutError::SendFailed(error.to_string())));
+        }
+      }
+    } else {
+      // Amountless invoice, use send_using_amount
+      match self.node.bolt11_payment().send_using_amount(invoice, amount_msat, None) {
+        Ok(payment_id) => payment_id,
+        Err(error) => {
+          eprintln!("[lightning-js] pay_out_bolt11 send_using_amount error: {error}");
+          if let Err(stop_error) = self.node.stop() {
+            eprintln!("[lightning-js] Failed to stop node after send_using_amount error: {stop_error}");
+          }
+          return Err(payout_error_to_napi(PayOutError::SendFailed(error.to_string())));
+        }
+      }
+    };
+    eprintln!(
+      "[lightning-js] pay_out_bolt11 send ok payment_id={}",
+      bytes_to_hex(&payment_id.0)
+    );
+
+    if let Some(wait_secs) = wait_for_payment_secs {
+      eprintln!("[lightning-js] pay_out_bolt11 waiting for payment outcome wait_secs={wait_secs}");
+      let wait_result = self.wait_for_payment_outcome(&payment_id, wait_secs);
+
+      if let Err(err) = self.node.stop() {
+        eprintln!("[lightning-js] Failed to stop node after payment wait: {err}");
+      }
+
+      wait_result?;
+    } else if let Err(err) = self.node.stop() {
+      eprintln!("[lightning-js] Failed to stop node after successful payment: {err}");
+    }
+
+    eprintln!(
+      "[lightning-js] pay_out_bolt11 returning payment_id={}",
+      bytes_to_hex(&payment_id.0)
+    );
+    Ok(bytes_to_hex(&payment_id.0))
+  }
+
+  /// Internal method to pay a Bolt12 offer.
+  fn pay_out_bolt12(
+    &self,
+    offer: &Offer,
+    amount_msat: u64,
+    wait_for_payment_secs: Option<u64>,
+  ) -> napi::Result<String> {
+    eprintln!(
+      "[lightning-js] pay_out_bolt12 offer_id={} amount_msat={}",
+      offer.id(),
+      amount_msat
+    );
+
+    // Check for unsupported currency
+    if let Some(Amount::Currency { .. }) = offer.amount() {
+      return Err(payout_error_to_napi(PayOutError::UnsupportedCurrency));
+    }
+
+    eprintln!("[lightning-js] pay_out_bolt12 starting node");
+    self.node.start().map_err(|error| {
+      payout_error_to_napi(PayOutError::NodeStart(error.to_string()))
+    })?;
+
+    // Full RGS sync to get node announcements (addresses/features) needed for BOLT12
+    eprintln!("[lightning-js] pay_out_bolt12 doing full RGS sync");
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime for RGS sync");
+    rt.block_on(async {
+      match self.node.sync_rgs(true).await {
+        Ok(ts) => eprintln!(
+          "[lightning-js] pay_out_bolt12 RGS sync complete, timestamp={}",
+          ts
+        ),
+        Err(e) => eprintln!("[lightning-js] pay_out_bolt12 RGS sync failed: {}", e),
+      }
+    });
+
+    eprintln!("[lightning-js] pay_out_bolt12 syncing wallets");
+    if let Err(err) = self.node.sync_wallets() {
+      if let Err(stop_err) = self.node.stop() {
+        eprintln!("[lightning-js] Failed to stop node after wallet sync error: {stop_err}");
+      }
+      return Err(payout_error_to_napi(PayOutError::WalletSync(err.to_string())));
+    }
+    eprintln!("[lightning-js] pay_out_bolt12 wallet sync complete");
+
+    let channels = self.node.list_channels();
+    let ready_channels: Vec<_> = channels
+      .iter()
+      .filter(|channel| channel.is_channel_ready)
+      .collect();
+    let available_balance_msat: u64 = ready_channels
+      .iter()
+      .map(|channel| channel.outbound_capacity_msat)
+      .sum();
+
+    eprintln!(
+      "[lightning-js] pay_out_bolt12 channels: total={} ready={} available_balance_msat={}",
+      channels.len(),
+      ready_channels.len(),
+      available_balance_msat
+    );
+
+    if available_balance_msat == 0 {
+      if let Err(err) = self.node.stop() {
+        eprintln!("[lightning-js] Failed to stop node after checking outbound capacity: {err}");
+      }
+      return Err(payout_error_to_napi(PayOutError::NoOutboundCapacity));
+    }
+
+    // Determine the amount to send - use offer amount if fixed, otherwise use provided amount
+    let amount_to_send_msat = match offer.amount() {
+      Some(Amount::Bitcoin { amount_msats }) => amount_msats,
+      Some(Amount::Currency { .. }) => {
+        if let Err(err) = self.node.stop() {
+          eprintln!("[lightning-js] Failed to stop node after unsupported currency: {err}");
+        }
+        return Err(payout_error_to_napi(PayOutError::UnsupportedCurrency));
+      }
+      None => amount_msat,
+    };
+
+    eprintln!(
+      "[lightning-js] pay_out_bolt12 amount_to_send_msat={}",
+      amount_to_send_msat
+    );
+
+    if amount_to_send_msat == 0 {
+      if let Err(err) = self.node.stop() {
+        eprintln!("[lightning-js] Failed to stop node after zero amount: {err}");
+      }
+      return Err(payout_error_to_napi(PayOutError::AmountZero));
+    }
+
+    if available_balance_msat < amount_to_send_msat {
+      if let Err(err) = self.node.stop() {
+        eprintln!("[lightning-js] Failed to stop node after insufficient outbound capacity: {err}");
+      }
+      return Err(payout_error_to_napi(PayOutError::InsufficientCapacity {
+        required_msat: amount_to_send_msat,
+        available_msat: available_balance_msat,
+      }));
+    }
+
+    eprintln!(
+      "[lightning-js] pay_out_bolt12 sending payment: offer_id={} amount_msat={}",
+      offer.id(),
+      amount_to_send_msat
+    );
+
+    let payment_id = match self.node.bolt12_payment().send_using_amount(
+      offer,
+      amount_to_send_msat,
+      None,
+      Some("A payment by MoneyDevKit".to_string()),
+    ) {
+      Ok(payment_id) => payment_id,
+      Err(error) => {
+        eprintln!("[lightning-js] pay_out_bolt12 send error: {error}");
+        if let Err(stop_error) = self.node.stop() {
+          eprintln!("[lightning-js] Failed to stop node after send error: {stop_error}");
+        }
+        return Err(payout_error_to_napi(PayOutError::SendFailed(error.to_string())));
+      }
+    };
+    eprintln!(
+      "[lightning-js] pay_out_bolt12 send ok payment_id={}",
+      bytes_to_hex(&payment_id.0)
+    );
+
+    if let Some(wait_secs) = wait_for_payment_secs {
+      eprintln!(
+        "[lightning-js] pay_out_bolt12 waiting for payment outcome wait_secs={wait_secs}"
+      );
+      let wait_result = self.wait_for_payment_outcome(&payment_id, wait_secs);
+
+      if let Err(err) = self.node.stop() {
+        eprintln!("[lightning-js] Failed to stop node after payment wait: {err}");
+      }
+
+      wait_result?;
+    } else if let Err(err) = self.node.stop() {
+      eprintln!("[lightning-js] Failed to stop node after successful payment: {err}");
+    }
+
+    eprintln!(
+      "[lightning-js] pay_out_bolt12 returning payment_id={}",
+      bytes_to_hex(&payment_id.0)
+    );
+    Ok(bytes_to_hex(&payment_id.0))
+  }
 }
 
 /// Wait for all channels to become usable after node startup/sync.
@@ -1299,6 +1678,82 @@ impl std::error::Error for LnurlPayError {}
 fn lnurl_error_to_napi(err: LnurlPayError) -> napi::Error {
   let status = match err {
     LnurlPayError::Parse(_) | LnurlPayError::Finalization(_) => Status::InvalidArg,
+    _ => Status::GenericFailure,
+  };
+  napi::Error::new(status, err.to_string())
+}
+
+/// Error type for pay_out method which handles various Lightning payment types.
+#[derive(Debug)]
+enum PayOutError {
+  /// Failed to initialize the async runtime.
+  RuntimeInit(String),
+  /// Failed to parse payment instructions.
+  Parse(String),
+  /// Failed to finalize configurable amount.
+  Finalization(&'static str),
+  /// No Lightning payment method found in the resolved instructions.
+  NoLightningMethod,
+  /// Configurable amount instructions require an amount to be specified.
+  AmountRequired,
+  /// Amount exceeds supported maximum (21 million BTC).
+  AmountTooLarge,
+  /// Amount must be greater than zero.
+  AmountZero,
+  /// Failed to start the node.
+  NodeStart(String),
+  /// Failed to sync wallets.
+  WalletSync(String),
+  /// No outbound capacity available.
+  NoOutboundCapacity,
+  /// Insufficient outbound capacity.
+  InsufficientCapacity { required_msat: u64, available_msat: u64 },
+  /// Failed to send payment.
+  SendFailed(String),
+  /// Unsupported currency in Bolt12 offer.
+  UnsupportedCurrency,
+}
+
+impl fmt::Display for PayOutError {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match self {
+      Self::RuntimeInit(err) => write!(f, "failed to initialize async runtime: {err}"),
+      Self::Parse(err) => write!(f, "failed to parse payment instructions: {err}"),
+      Self::Finalization(err) => write!(f, "failed to finalize payment amount: {err}"),
+      Self::NoLightningMethod => write!(
+        f,
+        "payment instructions did not contain a supported Lightning payment method"
+      ),
+      Self::AmountRequired => write!(
+        f,
+        "amount is required for this payment instruction (variable amount invoice/offer/lnurl)"
+      ),
+      Self::AmountTooLarge => write!(f, "amount exceeds supported maximum (21 million BTC)"),
+      Self::AmountZero => write!(f, "amount must be greater than zero"),
+      Self::NodeStart(err) => write!(f, "failed to start node: {err}"),
+      Self::WalletSync(err) => write!(f, "failed to sync wallets: {err}"),
+      Self::NoOutboundCapacity => write!(f, "no outbound capacity available"),
+      Self::InsufficientCapacity {
+        required_msat,
+        available_msat,
+      } => write!(
+        f,
+        "insufficient outbound capacity: required {required_msat}msat, available {available_msat}msat"
+      ),
+      Self::SendFailed(err) => write!(f, "failed to send payment: {err}"),
+      Self::UnsupportedCurrency => write!(f, "unsupported currency in payment instruction"),
+    }
+  }
+}
+
+impl std::error::Error for PayOutError {}
+
+fn payout_error_to_napi(err: PayOutError) -> napi::Error {
+  let status = match &err {
+    PayOutError::Parse(_)
+    | PayOutError::AmountRequired
+    | PayOutError::AmountTooLarge
+    | PayOutError::AmountZero => Status::InvalidArg,
     _ => Status::GenericFailure,
   };
   napi::Error::new(status, err.to_string())
