@@ -1,7 +1,7 @@
 #![deny(clippy::all)]
 
 use std::{
-  collections::HashMap,
+  collections::{HashMap, HashSet},
   convert::TryFrom,
   fmt::{self, Write},
   str::FromStr,
@@ -38,6 +38,7 @@ use ldk_node::{
     util::scid_utils,
   },
   lightning_invoice::{Bolt11Invoice, Bolt11InvoiceDescription, Description},
+  lightning_types::payment::PaymentHash,
   Builder, Event, Node,
 };
 use tokio::runtime::Runtime;
@@ -439,7 +440,11 @@ impl MdkNode {
     min_threshold_ms: i64,
     quiet_threshold_ms: i64,
   ) -> Vec<ReceivedPayment> {
+    // Hard timeout to prevent infinite wait if claims get stuck (60 seconds)
+    const HARD_TIMEOUT_MS: i64 = 60_000;
+
     let mut received_payments = vec![];
+    let mut pending_claims: HashSet<PaymentHash> = HashSet::new();
 
     if let Err(err) = self.node.start() {
       eprintln!("[lightning-js] Failed to start node in receive_payment: {err}");
@@ -460,7 +465,25 @@ impl MdkNode {
       let total_time_elapsed = now.duration_since(start_sync_at).as_millis() as i64;
       let quiet_time_elapsed = now.duration_since(last_event_time).as_millis() as i64;
 
-      if total_time_elapsed >= min_threshold_ms && quiet_time_elapsed >= quiet_threshold_ms {
+      // Don't exit if we have pending claims - wait for them to resolve
+      let can_exit = pending_claims.is_empty()
+        && total_time_elapsed >= min_threshold_ms
+        && quiet_time_elapsed >= quiet_threshold_ms;
+
+      if can_exit {
+        break;
+      }
+
+      // Hard timeout to prevent infinite wait
+      if total_time_elapsed >= HARD_TIMEOUT_MS {
+        if !pending_claims.is_empty() {
+          eprintln!(
+            "[lightning-js] WARNING: Exiting receive_payment with {} pending claims after hard timeout ({}ms): {:?}",
+            pending_claims.len(),
+            HARD_TIMEOUT_MS,
+            pending_claims.iter().map(|h| bytes_to_hex(&h.0)).collect::<Vec<_>>()
+          );
+        }
         break;
       }
 
@@ -489,6 +512,11 @@ impl MdkNode {
             eprintln!(
               "[lightning-js] PaymentFailed payment_id={payment_id_hex} payment_hash={payment_hash_hex} reason={reason_str}",
             );
+
+            // Remove from pending claims if present (claim failed, no longer pending)
+            if let Some(hash) = payment_hash {
+              pending_claims.remove(hash);
+            }
           }
           Event::PaymentClaimable {
             payment_hash,
@@ -505,6 +533,9 @@ impl MdkNode {
             eprintln!(
               "[lightning-js] PaymentClaimable payment_hash={payment_hash_hex} claimable_amount_msat={claimable_amount_msat} claim_deadline={claim_deadline_str}",
             );
+
+            // Track this payment as pending - we must wait for it to complete
+            pending_claims.insert(*payment_hash);
           }
           Event::PaymentReceived {
             payment_hash,
@@ -515,6 +546,9 @@ impl MdkNode {
             eprintln!(
               "[lightning-js] PaymentReceived payment_hash={payment_hash_hex} amount_msat={amount_msat}",
             );
+
+            // Claim completed - remove from pending
+            pending_claims.remove(payment_hash);
           }
           _ => {}
         }
