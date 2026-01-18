@@ -59,27 +59,50 @@ jobs:
         settings:
           - host: macos-latest
             target: x86_64-apple-darwin
-            build: yarn build --target x86_64-apple-darwin
+            build: |
+              rustup install 1.85
+              rustup default 1.85
+              rustup target add x86_64-apple-darwin
+              yarn build --target x86_64-apple-darwin
           - host: windows-latest
-            build: yarn build --target x86_64-pc-windows-msvc
+            build: |
+              rustup install 1.85
+              rustup default 1.85
+              rustup target add x86_64-pc-windows-msvc
+              yarn build --target x86_64-pc-windows-msvc
             target: x86_64-pc-windows-msvc
           - host: windows-latest
-            build: yarn build --target i686-pc-windows-msvc
+            build: |
+              rustup install 1.85
+              rustup default 1.85
+              rustup target add i686-pc-windows-msvc
+              yarn build --target i686-pc-windows-msvc
             target: i686-pc-windows-msvc
           - host: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian
-            build: yarn build --target x86_64-unknown-linux-gnu
+            build: |
+              rustup install 1.85
+              rustup default 1.85
+              rustup target add x86_64-unknown-linux-gnu
+              yarn build --target x86_64-unknown-linux-gnu
           - host: ubuntu-latest
             target: x86_64-unknown-linux-musl
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-alpine
             build: |
               export CC=gcc
               export CXX=g++
+              rustup install 1.85
+              rustup default 1.85
+              rustup target add x86_64-unknown-linux-musl
               yarn build --target x86_64-unknown-linux-musl
           - host: macos-latest
             target: aarch64-apple-darwin
-            build: yarn build --target aarch64-apple-darwin
+            build: |
+              rustup install 1.85
+              rustup default 1.85
+              rustup target add aarch64-apple-darwin
+              yarn build --target aarch64-apple-darwin
           - host: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian-aarch64
@@ -92,22 +115,35 @@ jobs:
               export AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar
               export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
               export CFLAGS_aarch64_unknown_linux_gnu="-DAT_HWCAP2=26"
+              rustup install 1.85
+              rustup default 1.85
+              rustup target add aarch64-unknown-linux-gnu
               yarn build --target aarch64-unknown-linux-gnu
           - host: ubuntu-latest
             target: aarch64-linux-android
-            build: yarn build --target aarch64-linux-android
+            build: |
+              rustup install 1.85
+              rustup default 1.85
+              rustup target add aarch64-linux-android
+              yarn build --target aarch64-linux-android
           - host: ubuntu-latest
             target: aarch64-unknown-linux-musl
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-alpine
-            build: |-
-              set -e &&
+            build: |
+              set -e
               export CC=aarch64-linux-musl-gcc
               export CXX=aarch64-linux-musl-g++
-              rustup target add aarch64-unknown-linux-musl &&
+              rustup install 1.85
+              rustup default 1.85
+              rustup target add aarch64-unknown-linux-musl
               yarn build --target aarch64-unknown-linux-musl
           - host: windows-latest
             target: aarch64-pc-windows-msvc
-            build: yarn build --target aarch64-pc-windows-msvc
+            build: |
+              rustup install 1.85
+              rustup default 1.85
+              rustup target add aarch64-pc-windows-msvc
+              yarn build --target aarch64-pc-windows-msvc
     name: stable - ${{ matrix.settings.target }} - node@18
     runs-on: ${{ matrix.settings.host }}
     steps:
