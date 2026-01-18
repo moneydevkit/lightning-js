@@ -1,7 +1,8 @@
 [package]
-edition = "2021"
 name    = "lightning-js"
 version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
 
 [lib]
 crate-type = ["cdylib"]
@@ -15,14 +16,6 @@ ldk-node    = { default-features = false, git = "https://github.com/moneydevkit/
 napi        = { version = "2", features = ["napi4"] }
 napi-derive = "2"
 tokio       = { version = "1", features = ["rt-multi-thread"] }
-# Temporary pin: ldk-node pulls in home 0.5.12 which needs edition2024 cargo
-home = "=0.5.11"
-# Pin ICU crates to keep MSRV at 1.82.0
-icu_collections = "=2.0.0"
-icu_locale_core = "=2.0.0"
-icu_normalizer  = "=2.0.0"
-icu_properties  = "=2.0.1"
-icu_provider    = "=2.0.0"
 writeable       = { version = "=0.6.2", features = ["alloc"] }
 
 [build-dependencies]
