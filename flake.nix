@@ -42,6 +42,17 @@
         # This improves caching by excluding unrelated files from the build hash.
         src = craneLib.cleanCargoSource ./.;
 
+        # Map Nix system to NAPI-RS node addon naming convention.
+        # The naming follows: {name}.{platform}-{arch}[-libc].node
+        nativeNodeName =
+          {
+            "x86_64-linux" = "lightning-js.linux-x64-gnu.node";
+            "aarch64-linux" = "lightning-js.linux-arm64-gnu.node";
+            "x86_64-darwin" = "lightning-js.darwin-x64.node";
+            "aarch64-darwin" = "lightning-js.darwin-arm64.node";
+          }
+          .${localSystem} or (throw "Unsupported system: ${localSystem}");
+
         # Build inputs shared across native builds and checks.
         # These are libraries linked into the final binary.
         commonBuildInputs =
@@ -79,12 +90,13 @@
             nativeBuildInputs = [ pkg-config ] ++ lib.optionals stdenv.isLinux [ pkgs.mold ];
 
             # Libraries linked into the final binary
-            buildInputs =
-              [ openssl ]
-              ++ lib.optionals stdenv.isDarwin [
-                darwin.apple_sdk.frameworks.Security
-                darwin.apple_sdk.frameworks.SystemConfiguration
-              ];
+            buildInputs = [
+              openssl
+            ]
+            ++ lib.optionals stdenv.isDarwin [
+              darwin.apple_sdk.frameworks.Security
+              darwin.apple_sdk.frameworks.SystemConfiguration
+            ];
 
             # macOS minimum deployment target (matches CI)
             MACOSX_DEPLOYMENT_TARGET = lib.optionalString stdenv.isDarwin "10.13";
@@ -92,15 +104,15 @@
             # Custom install phase for NAPI-RS native addon.
             # Cargo builds a cdylib (.so on Linux, .dylib on macOS).
             # Node.js expects native addons to have .node extension.
-            # The naming convention follows NAPI-RS: {name}.{platform}.node
+            # The naming convention follows NAPI-RS: {name}.{platform}-{arch}.node
             installPhaseCommand = ''
               mkdir -p $out/lib
 
               # Copy the shared library with NAPI-RS naming convention
               if [ -f target/release/liblightning_js.so ]; then
-                cp target/release/liblightning_js.so $out/lib/lightning-js.linux-x64-gnu.node
+                cp target/release/liblightning_js.so $out/lib/${nativeNodeName}
               elif [ -f target/release/liblightning_js.dylib ]; then
-                cp target/release/liblightning_js.dylib $out/lib/lightning-js.darwin-x64.node
+                cp target/release/liblightning_js.dylib $out/lib/${nativeNodeName}
               fi
             '';
           }
@@ -127,12 +139,13 @@
             CARGO_PROFILE = "dev";
 
             nativeBuildInputs = [ pkg-config ] ++ lib.optionals stdenv.isLinux [ pkgs.mold ];
-            buildInputs =
-              [ openssl ]
-              ++ lib.optionals stdenv.isDarwin [
-                darwin.apple_sdk.frameworks.Security
-                darwin.apple_sdk.frameworks.SystemConfiguration
-              ];
+            buildInputs = [
+              openssl
+            ]
+            ++ lib.optionals stdenv.isDarwin [
+              darwin.apple_sdk.frameworks.Security
+              darwin.apple_sdk.frameworks.SystemConfiguration
+            ];
 
             MACOSX_DEPLOYMENT_TARGET = lib.optionalString stdenv.isDarwin "10.13";
 
@@ -141,9 +154,9 @@
               mkdir -p $out/lib
 
               if [ -f target/debug/liblightning_js.so ]; then
-                cp target/debug/liblightning_js.so $out/lib/lightning-js.linux-x64-gnu.node
+                cp target/debug/liblightning_js.so $out/lib/${nativeNodeName}
               elif [ -f target/debug/liblightning_js.dylib ]; then
-                cp target/debug/liblightning_js.dylib $out/lib/lightning-js.darwin-x64.node
+                cp target/debug/liblightning_js.dylib $out/lib/${nativeNodeName}
               fi
             '';
           }
@@ -188,9 +201,17 @@
 
               # Tell Cargo which target to build for
               CARGO_BUILD_TARGET = target;
-              CARGO_BUILD_RUSTFLAGS = extraFlags;
 
-              nativeBuildInputs = [ pkg-config ];
+              # Use RUSTFLAGS (priority #2) to override config.toml's target-specific flags.
+              # For musl targets, we need -crt-static to allow cdylib output.
+              RUSTFLAGS = "-C link-arg=-fuse-ld=mold" + (if extraFlags != "" then " ${extraFlags}" else "");
+
+              # pkg-config runs at build time to locate openssl
+              # mold is required because .cargo/config.toml sets -fuse-ld=mold for Linux targets
+              nativeBuildInputs = [
+                pkg-config
+                pkgs.mold
+              ];
               buildInputs = [ openssl ];
 
               # Find and copy the cross-compiled shared library.
@@ -205,7 +226,9 @@
           ) { };
 
         # ============================================================
-        # Cross-compilation helper for musl (static) targets
+        # Cross-compilation helper for musl targets
+        # Note: Uses dynamic musl (-crt-static) because cdylib (shared library)
+        # output is incompatible with static musl (+crt-static).
         # ============================================================
         mkMuslPackage =
           {
@@ -228,11 +251,18 @@
             # Build for musl target
             CARGO_BUILD_TARGET = target;
 
-            # Link the C runtime statically for fully static binaries.
-            # This makes the binary portable across Linux distributions.
-            CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
+            # Use RUSTFLAGS (priority #2) to override config.toml's target-specific flags.
+            # -crt-static: Required for cdylib output (musl defaults to +crt-static which
+            # is incompatible with shared libraries). The addon will depend on musl.so.
+            # -fuse-ld=mold: Fast linker (matches config.toml for consistency).
+            RUSTFLAGS = "-C target-feature=-crt-static -C link-arg=-fuse-ld=mold";
 
-            nativeBuildInputs = with pkgs; [ pkg-config ];
+            # pkg-config runs at build time to locate openssl
+            # mold is required because .cargo/config.toml sets -fuse-ld=mold for Linux targets
+            nativeBuildInputs = with pkgs; [
+              pkg-config
+              mold
+            ];
 
             # Use static versions of libraries for musl builds
             buildInputs = with pkgs.pkgsStatic; [ openssl ];
@@ -240,7 +270,7 @@
             installPhaseCommand = ''
               mkdir -p $out/lib
 
-              # Find and copy the statically-linked shared library
+              # Find and copy the musl-linked shared library
               find target -name "liblightning_js.so" -exec cp {} $out/lib/${nodeName} \; 2>/dev/null || true
             '';
           };
@@ -339,48 +369,51 @@
           inherit nativePackage cargoClippy cargoFmt;
         };
 
-        packages =
-          {
-            default = nativePackage;
-            debug = debugPackage; # Fast build without optimizations
-          }
-          # Cross-compilation packages are only available on Linux hosts
-          // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
-            # Linux ARM64 with glibc (for standard Linux distros)
-            aarch64_unknown_linux_gnu = mkCrossPackage {
-              crossSystem = "aarch64-linux";
-              target = "aarch64-unknown-linux-gnu";
-              nodeName = "lightning-js.linux-arm64-gnu.node";
-            };
-
-            # Linux x86_64 with musl (static, portable binary)
-            x86_64_unknown_linux_musl = mkMuslPackage {
-              target = "x86_64-unknown-linux-musl";
-              nodeName = "lightning-js.linux-x64-musl.node";
-            };
-
-            # Linux ARM64 with musl (static, portable binary)
-            aarch64_unknown_linux_musl = mkCrossPackage {
-              crossSystem = { config = "aarch64-unknown-linux-musl"; };
-              target = "aarch64-unknown-linux-musl";
-              nodeName = "lightning-js.linux-arm64-musl.node";
-              extraFlags = "-C target-feature=+crt-static";
-            };
-
-            # Android ARM64 (most modern Android devices)
-            aarch64_linux_android = mkAndroidPackage {
-              target = "aarch64-linux-android";
-              nodeName = "lightning-js.android-arm64.node";
-              androidAbi = "arm64-v8a";
-            };
-
-            # Android ARMv7 (older 32-bit devices)
-            armv7_linux_androideabi = mkAndroidPackage {
-              target = "armv7-linux-androideabi";
-              nodeName = "lightning-js.android-arm-eabi.node";
-              androidAbi = "armeabi-v7a";
-            };
+        packages = {
+          default = nativePackage;
+          debug = debugPackage; # Fast build without optimizations
+        }
+        # Cross-compilation packages are only available on Linux hosts
+        // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          # Linux ARM64 with glibc (for standard Linux distros)
+          aarch64_unknown_linux_gnu = mkCrossPackage {
+            crossSystem = "aarch64-linux";
+            target = "aarch64-unknown-linux-gnu";
+            nodeName = "lightning-js.linux-arm64-gnu.node";
           };
+
+          # Linux x86_64 with musl (dynamically linked to musl.so)
+          x86_64_unknown_linux_musl = mkMuslPackage {
+            target = "x86_64-unknown-linux-musl";
+            nodeName = "lightning-js.linux-x64-musl.node";
+          };
+
+          # Linux ARM64 with musl (static, portable binary)
+          # Linux ARM64 with musl (dynamically linked to musl.so for cdylib compatibility)
+          aarch64_unknown_linux_musl = mkCrossPackage {
+            crossSystem = {
+              config = "aarch64-unknown-linux-musl";
+            };
+            target = "aarch64-unknown-linux-musl";
+            nodeName = "lightning-js.linux-arm64-musl.node";
+            # -crt-static: Required for cdylib output (musl defaults to +crt-static)
+            extraFlags = "-C target-feature=-crt-static";
+          };
+
+          # Android ARM64 (most modern Android devices)
+          aarch64_linux_android = mkAndroidPackage {
+            target = "aarch64-linux-android";
+            nodeName = "lightning-js.android-arm64.node";
+            androidAbi = "arm64-v8a";
+          };
+
+          # Android ARMv7 (older 32-bit devices)
+          armv7_linux_androideabi = mkAndroidPackage {
+            target = "armv7-linux-androideabi";
+            nodeName = "lightning-js.android-arm-eabi.node";
+            androidAbi = "armeabi-v7a";
+          };
+        };
 
         devShells.default = pkgs.mkShell {
           name = "lightning-js-dev";
