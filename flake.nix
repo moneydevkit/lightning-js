@@ -58,11 +58,13 @@
         commonBuildInputs =
           with pkgs;
           [ openssl ]
-          ++ lib.optionals stdenv.isDarwin [
-            # macOS requires these frameworks for network/TLS operations
-            darwin.apple_sdk.frameworks.Security
-            darwin.apple_sdk.frameworks.SystemConfiguration
-          ];
+          ++ lib.optionals stdenv.isDarwin (
+            with apple-sdk.frameworks; [
+              # macOS requires these frameworks for network/TLS operations
+              Security
+              SystemConfiguration
+            ]
+          );
 
         # ============================================================
         # Native build for the current system
@@ -76,7 +78,6 @@
             openssl,
             pkg-config,
             stdenv,
-            darwin,
           }:
           craneLib.buildPackage {
             inherit src;
@@ -93,13 +94,15 @@
             buildInputs = [
               openssl
             ]
-            ++ lib.optionals stdenv.isDarwin [
-              darwin.apple_sdk.frameworks.Security
-              darwin.apple_sdk.frameworks.SystemConfiguration
-            ];
+            ++ lib.optionals stdenv.isDarwin (
+              with pkgs.apple-sdk.frameworks; [
+                Security
+                SystemConfiguration
+              ]
+            );
 
             # macOS minimum deployment target (matches CI)
-            MACOSX_DEPLOYMENT_TARGET = lib.optionalString stdenv.isDarwin "10.13";
+            MACOSX_DEPLOYMENT_TARGET = lib.optionalString stdenv.isDarwin "11.0";
 
             # Custom install phase for NAPI-RS native addon.
             # Cargo builds a cdylib (.so on Linux, .dylib on macOS).
@@ -127,7 +130,6 @@
             openssl,
             pkg-config,
             stdenv,
-            darwin,
           }:
           craneLib.buildPackage {
             inherit src;
@@ -142,12 +144,14 @@
             buildInputs = [
               openssl
             ]
-            ++ lib.optionals stdenv.isDarwin [
-              darwin.apple_sdk.frameworks.Security
-              darwin.apple_sdk.frameworks.SystemConfiguration
-            ];
+            ++ lib.optionals stdenv.isDarwin (
+              with pkgs.apple-sdk.frameworks; [
+                Security
+                SystemConfiguration
+              ]
+            );
 
-            MACOSX_DEPLOYMENT_TARGET = lib.optionalString stdenv.isDarwin "10.13";
+            MACOSX_DEPLOYMENT_TARGET = lib.optionalString stdenv.isDarwin "11.0";
 
             # Debug builds output to target/debug/
             installPhaseCommand = ''
