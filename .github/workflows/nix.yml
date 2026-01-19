@@ -31,7 +31,7 @@ jobs:
       - name: Check flake
         uses: DeterminateSystems/flake-checker-action@main
 
-      - name: Run checks (clippy, rustfmt)
+      - name: Run checks (clippy, rustfmt, build)
         run: nix flake check
 
   build-linux:
@@ -42,7 +42,7 @@ jobs:
       fail-fast: false
       matrix:
         target:
-          - default
+          - x86_64_unknown_linux_gnu
           - aarch64_unknown_linux_gnu
           - x86_64_unknown_linux_musl
           - aarch64_unknown_linux_musl
