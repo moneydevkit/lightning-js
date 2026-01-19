@@ -56,26 +56,17 @@
           .${localSystem} or (throw "Unsupported system: ${localSystem}");
 
         # Generate install phase command for copying the built library
+        # Uses find to locate the library since Crane may place it in various locations
         mkInstallPhase =
-          { nodeName, targetDir }:
-          ''
-            mkdir -p $out/lib
-            # Copy the shared library with NAPI-RS naming convention
-            # Cargo builds a cdylib (.so on Linux, .dylib on macOS)
-            # Node.js expects native addons to have .node extension
-            if [ -f ${targetDir}/liblightning_js.so ]; then
-              cp ${targetDir}/liblightning_js.so $out/lib/${nodeName}
-            elif [ -f ${targetDir}/liblightning_js.dylib ]; then
-              cp ${targetDir}/liblightning_js.dylib $out/lib/${nodeName}
-            fi
-          '';
-
-        # Generate install phase for cross-compiled builds (searches target directory)
-        mkCrossInstallPhase =
           nodeName:
           ''
             mkdir -p $out/lib
-            find target -name "liblightning_js.so" -exec cp {} $out/lib/${nodeName} \; 2>/dev/null || true
+            # Find and copy the shared library with NAPI-RS naming convention
+            # Cargo builds a cdylib (.so on Linux, .dylib on macOS)
+            # Node.js expects native addons to have .node extension
+            if ! find target -name "liblightning_js.so" -exec cp {} $out/lib/${nodeName} \; 2>/dev/null; then
+              find target -name "liblightning_js.dylib" -exec cp {} $out/lib/${nodeName} \; 2>/dev/null || true
+            fi
           '';
 
         # ============================================================
@@ -83,9 +74,6 @@
         # ============================================================
         mkNativePackage =
           { isDebug ? false }:
-          let
-            targetDir = "target/${if isDebug then "debug" else "release"}";
-          in
           pkgs.callPackage (
             # Using callPackage for proper "splicing" - Nix automatically
             # provides the correct versions of dependencies for the target platform.
@@ -110,10 +98,7 @@
 
               buildInputs = [ openssl ];
 
-              installPhaseCommand = mkInstallPhase {
-                nodeName = nativeNodeName;
-                inherit targetDir;
-              };
+              installPhaseCommand = mkInstallPhase nativeNodeName;
             }
           ) { };
 
@@ -166,7 +151,7 @@
               nativeBuildInputs = [ pkg-config pkgs.mold ];
               buildInputs = if useStaticLibs then [ pkgs.pkgsStatic.openssl ] else [ openssl ];
 
-              installPhaseCommand = mkCrossInstallPhase nodeName;
+              installPhaseCommand = mkInstallPhase nodeName;
             }
           ) { };
 
@@ -237,7 +222,7 @@
 
             nativeBuildInputs = [ pkgs.pkg-config ];
 
-            installPhaseCommand = mkCrossInstallPhase nodeName;
+            installPhaseCommand = mkInstallPhase nodeName;
           };
 
         # ============================================================
