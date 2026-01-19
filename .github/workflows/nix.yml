@@ -31,6 +31,9 @@ jobs:
       - name: Check flake
         uses: DeterminateSystems/flake-checker-action@main
 
+      - name: Verify all packages evaluate
+        run: nix flake check --all-systems --no-build
+
       - name: Run checks (clippy, rustfmt, build)
         run: nix flake check
 
@@ -46,6 +49,10 @@ jobs:
           - aarch64_unknown_linux_gnu
           - x86_64_unknown_linux_musl
           - aarch64_unknown_linux_musl
+        include:
+          # x86_64 glibc uses 'default' - the native build on ubuntu runners
+          - target: x86_64_unknown_linux_gnu
+            package: default
     steps:
       - uses: actions/checkout@v4
 
@@ -56,7 +63,7 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@main
 
       - name: Build ${{ matrix.target }}
-        run: nix build .#${{ matrix.target }} --print-out-paths
+        run: nix build .#${{ matrix.package || matrix.target }} --print-out-paths
 
       - name: List output
         run: |
