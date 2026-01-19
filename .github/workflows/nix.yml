@@ -109,17 +109,9 @@ jobs:
           if-no-files-found: error
 
   build-macos:
-    name: Build - macOS ${{ matrix.arch }}
-    runs-on: ${{ matrix.runner }}
+    name: Build - macOS arm64
+    runs-on: macos-latest
     needs: check
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-13
-            arch: x64
-          - runner: macos-14
-            arch: arm64
     steps:
       - uses: actions/checkout@v4
 
@@ -140,7 +132,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: bindings-darwin-${{ matrix.arch }}
+          name: bindings-darwin-arm64
           path: result/lib/*.node
           if-no-files-found: error
 
