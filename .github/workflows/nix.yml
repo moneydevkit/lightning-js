@@ -1,0 +1,208 @@
+name: Nix
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "**/*.md"
+      - LICENSE
+      - .editorconfig
+      - docs/**
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Flake Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Enable Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Check flake
+        uses: DeterminateSystems/flake-checker-action@main
+
+      - name: Run checks (clippy, rustfmt)
+        run: nix flake check
+
+  build-linux:
+    name: Build - ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - default
+          - aarch64_unknown_linux_gnu
+          - x86_64_unknown_linux_musl
+          - aarch64_unknown_linux_musl
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Enable Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Build ${{ matrix.target }}
+        run: nix build .#${{ matrix.target }} --print-out-paths
+
+      - name: List output
+        run: |
+          ls -la result/lib/
+          file result/lib/*.node
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bindings-${{ matrix.target }}
+          path: result/lib/*.node
+          if-no-files-found: error
+
+  build-android:
+    name: Build - ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64_linux_android
+          - armv7_linux_androideabi
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+        with:
+          extra-conf: |
+            extra-substituters = https://cache.nixos.org
+            extra-trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
+
+      - name: Enable Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Build ${{ matrix.target }}
+        run: nix build .#${{ matrix.target }} --print-out-paths
+
+      - name: List output
+        run: |
+          ls -la result/lib/
+          file result/lib/*.node
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bindings-${{ matrix.target }}
+          path: result/lib/*.node
+          if-no-files-found: error
+
+  build-macos:
+    name: Build - macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-13
+            arch: x64
+          - runner: macos-14
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Enable Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Build
+        run: nix build --print-out-paths
+
+      - name: List output
+        run: |
+          ls -la result/lib/
+          file result/lib/*.node
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bindings-darwin-${{ matrix.arch }}
+          path: result/lib/*.node
+          if-no-files-found: error
+
+  # Disable publish for now
+  publish:
+    if: false
+    name: Publish
+    runs-on: ubuntu-latest
+    needs:
+      - check
+      - build-linux
+      - build-android
+      - build-macos
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+
+      - name: Install dependencies
+        run: yarn install
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List downloaded artifacts
+        run: ls -R artifacts/
+
+      - name: Move artifacts to npm directories
+        run: |
+          # Copy all .node files from artifacts to current directory
+          # Nix outputs match NAPI-RS naming: lightning-js.{platform}.node
+          find artifacts -name "*.node" -exec cp {} . \;
+
+          # List what we have
+          ls -la lightning-js.*.node
+
+          # Run NAPI-RS artifacts command to move files to npm/ subdirectories
+          yarn artifacts
+
+      - name: List packages
+        run: ls -R ./npm
+
+      - name: Publish
+        run: |
+          npm config set provenance true
+          if git log -1 --pretty=%B | grep "^[0-9]\+\.[0-9]\+\.[0-9]\+$";
+          then
+            echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" >> ~/.npmrc
+            npm publish --access public
+          elif git log -1 --pretty=%B | grep "^[0-9]\+\.[0-9]\+\.[0-9]\+";
+          then
+            echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" >> ~/.npmrc
+            npm publish --tag next --access public
+          else
+            echo "Not a release, skipping publish"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
