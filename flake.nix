@@ -108,14 +108,7 @@
                 [ pkg-config ]
                 ++ lib.optionals stdenv.isLinux [ pkgs.mold ];
 
-              buildInputs =
-                [ openssl ]
-                ++ lib.optionals stdenv.isDarwin (
-                  with pkgs.darwin.apple_sdk.frameworks; [ Security SystemConfiguration ]
-                );
-
-              # macOS minimum deployment target (matches CI)
-              MACOSX_DEPLOYMENT_TARGET = lib.optionalString stdenv.isDarwin "11.0";
+              buildInputs = [ openssl ];
 
               installPhaseCommand = mkInstallPhase {
                 nodeName = nativeNodeName;
@@ -253,11 +246,7 @@
         checks =
           let
             # Build inputs only used for checks (not for package builds, which use callPackage splicing)
-            checkBuildInputs =
-              [ pkgs.openssl ]
-              ++ lib.optionals stdenv.isDarwin (
-                with pkgs.darwin.apple_sdk.frameworks; [ Security SystemConfiguration ]
-              );
+            checkBuildInputs = [ pkgs.openssl ];
             checkNativeBuildInputs =
               [ pkgs.pkg-config ]
               ++ lib.optionals stdenv.isLinux [ pkgs.mold ];
