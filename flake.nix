@@ -57,50 +57,51 @@
 
         # Generate install phase command for copying the built library
         # Uses find to locate the library since Crane may place it in various locations
-        mkInstallPhase =
-          nodeName:
-          ''
-            mkdir -p $out/lib
-            # Find and copy the shared library with NAPI-RS naming convention
-            # Cargo builds a cdylib (.so on Linux, .dylib on macOS)
-            # Node.js expects native addons to have .node extension
-            if ! find target -name "liblightning_js.so" -exec cp {} $out/lib/${nodeName} \; 2>/dev/null; then
-              find target -name "liblightning_js.dylib" -exec cp {} $out/lib/${nodeName} \; 2>/dev/null || true
-            fi
-          '';
+        mkInstallPhase = nodeName: ''
+          mkdir -p $out/lib
+          # Find and copy the shared library with NAPI-RS naming convention
+          # Cargo builds a cdylib (.so on Linux, .dylib on macOS)
+          # Node.js expects native addons to have .node extension
+          if ! find target -name "liblightning_js.so" -exec cp {} $out/lib/${nodeName} \; 2>/dev/null; then
+            find target -name "liblightning_js.dylib" -exec cp {} $out/lib/${nodeName} \; 2>/dev/null || true
+          fi
+        '';
+
+        # ============================================================
+        # Native build configuration (shared between packages and checks)
+        # ============================================================
+        nativeCommonArgs = {
+          inherit src;
+          pname = "lightning-js";
+          strictDeps = true;
+          nativeBuildInputs = [ pkgs.pkg-config ] ++ lib.optionals stdenv.isLinux [ pkgs.mold ];
+          buildInputs = [ pkgs.openssl ];
+        };
+
+        # Shared dependency derivation for native release builds and checks
+        nativeCargoArtifacts = craneLib.buildDepsOnly nativeCommonArgs;
+
+        # Separate debug deps (different profile = different artifacts)
+        debugCargoArtifacts = craneLib.buildDepsOnly (nativeCommonArgs // { CARGO_PROFILE = "dev"; });
 
         # ============================================================
         # Native build helper (release or debug)
         # ============================================================
         mkNativePackage =
-          { isDebug ? false }:
-          pkgs.callPackage (
-            # Using callPackage for proper "splicing" - Nix automatically
-            # provides the correct versions of dependencies for the target platform.
-            # See: https://crane.dev/examples/cross-rust-overlay.html
-            {
-              lib,
-              openssl,
-              pkg-config,
-              stdenv,
-            }:
-            craneLib.buildPackage {
-              inherit src;
-              pname = "lightning-js";
-              strictDeps = true;
+          {
+            isDebug ? false,
+          }:
+          craneLib.buildPackage (
+            nativeCommonArgs
+            // {
+              cargoArtifacts = if isDebug then debugCargoArtifacts else nativeCargoArtifacts;
 
               # Set profile for debug builds (Crane defaults to release)
               CARGO_PROFILE = lib.optionalString isDebug "dev";
 
-              nativeBuildInputs =
-                [ pkg-config ]
-                ++ lib.optionals stdenv.isLinux [ pkgs.mold ];
-
-              buildInputs = [ openssl ];
-
               installPhaseCommand = mkInstallPhase nativeNodeName;
             }
-          ) { };
+          );
 
         # ============================================================
         # Cross-compilation helper for Linux targets (glibc and musl)
@@ -132,28 +133,34 @@
 
             # Base RUSTFLAGS: always use mold linker for Linux
             baseRustFlags = "-C link-arg=-fuse-ld=mold";
-            rustFlags =
-              if extraRustFlags != "" then "${baseRustFlags} ${extraRustFlags}" else baseRustFlags;
-          in
-          crossPkgs.callPackage (
-            { openssl, pkg-config }:
-            crossCraneLib.buildPackage {
-              src = crossCraneLib.cleanCargoSource ./.;
-              pname = "lightning-js";
+            rustFlags = if extraRustFlags != "" then "${baseRustFlags} ${extraRustFlags}" else baseRustFlags;
+
+            crossSrc = crossCraneLib.cleanCargoSource ./.;
+
+            commonArgs = {
+              src = crossSrc;
+              pname = "lightning-js-${target}";
               strictDeps = true;
-
-              # Skip tests - can't run cross-compiled binaries on build host
               doCheck = false;
-
               CARGO_BUILD_TARGET = target;
               RUSTFLAGS = rustFlags;
+              nativeBuildInputs = [
+                crossPkgs.pkg-config
+                pkgs.mold
+              ];
+              buildInputs = if useStaticLibs then [ pkgs.pkgsStatic.openssl ] else [ crossPkgs.openssl ];
+            };
 
-              nativeBuildInputs = [ pkg-config pkgs.mold ];
-              buildInputs = if useStaticLibs then [ pkgs.pkgsStatic.openssl ] else [ openssl ];
-
+            # Build dependencies separately for better caching
+            cargoArtifacts = crossCraneLib.buildDepsOnly commonArgs;
+          in
+          crossCraneLib.buildPackage (
+            commonArgs
+            // {
+              inherit cargoArtifacts;
               installPhaseCommand = mkInstallPhase nodeName;
             }
-          ) { };
+          );
 
         # ============================================================
         # Android cross-compilation helper
@@ -203,61 +210,50 @@
                 };
               }
               .${target};
+
+            commonArgs = {
+              inherit src;
+              pname = "lightning-js-${target}";
+              strictDeps = true;
+              doCheck = false;
+              CARGO_BUILD_TARGET = target;
+              ANDROID_NDK_HOME = "${androidNdk}/libexec/android-sdk/ndk-bundle";
+              "CC_${cargoEnvTarget.lower}" = "${ndkToolchain}/bin/${ndkPrefix}${apiLevel}-clang";
+              "CXX_${cargoEnvTarget.lower}" = "${ndkToolchain}/bin/${ndkPrefix}${apiLevel}-clang++";
+              "AR_${cargoEnvTarget.lower}" = "${ndkToolchain}/bin/llvm-ar";
+              "CARGO_TARGET_${cargoEnvTarget.upper}_LINKER" = "${ndkToolchain}/bin/${ndkPrefix}${apiLevel}-clang";
+              nativeBuildInputs = [ pkgs.pkg-config ];
+            };
+
+            # Build dependencies separately for better caching
+            cargoArtifacts = androidCraneLib.buildDepsOnly commonArgs;
           in
-          androidCraneLib.buildPackage {
-            inherit src;
-            pname = "lightning-js";
-            strictDeps = true;
-
-            doCheck = false;
-
-            CARGO_BUILD_TARGET = target;
-            ANDROID_NDK_HOME = "${androidNdk}/libexec/android-sdk/ndk-bundle";
-
-            # Set CC, CXX, AR, and linker for the specific target
-            "CC_${cargoEnvTarget.lower}" = "${ndkToolchain}/bin/${ndkPrefix}${apiLevel}-clang";
-            "CXX_${cargoEnvTarget.lower}" = "${ndkToolchain}/bin/${ndkPrefix}${apiLevel}-clang++";
-            "AR_${cargoEnvTarget.lower}" = "${ndkToolchain}/bin/llvm-ar";
-            "CARGO_TARGET_${cargoEnvTarget.upper}_LINKER" = "${ndkToolchain}/bin/${ndkPrefix}${apiLevel}-clang";
-
-            nativeBuildInputs = [ pkgs.pkg-config ];
-
-            installPhaseCommand = mkInstallPhase nodeName;
-          };
+          androidCraneLib.buildPackage (
+            commonArgs
+            // {
+              inherit cargoArtifacts;
+              installPhaseCommand = mkInstallPhase nodeName;
+            }
+          );
 
         # ============================================================
         # Checks (run via `nix flake check`)
+        # Reuses nativeCargoArtifacts for faster CI when package is also built
         # ============================================================
-        checks =
-          let
-            # Build inputs only used for checks (not for package builds, which use callPackage splicing)
-            checkBuildInputs = [ pkgs.openssl ];
-            checkNativeBuildInputs =
-              [ pkgs.pkg-config ]
-              ++ lib.optionals stdenv.isLinux [ pkgs.mold ];
-
-            # Pre-build dependencies only (cached separately from source changes)
-            cargoArtifacts = craneLib.buildDepsOnly {
-              inherit src;
-              pname = "lightning-js";
-              nativeBuildInputs = checkNativeBuildInputs;
-              buildInputs = checkBuildInputs;
-            };
-          in
-          {
-            clippy = craneLib.cargoClippy {
-              inherit src cargoArtifacts;
-              pname = "lightning-js";
+        checks = {
+          clippy = craneLib.cargoClippy (
+            nativeCommonArgs
+            // {
+              cargoArtifacts = nativeCargoArtifacts;
               cargoClippyExtraArgs = "--all-targets -- --deny warnings";
-              nativeBuildInputs = checkNativeBuildInputs;
-              buildInputs = checkBuildInputs;
-            };
+            }
+          );
 
-            fmt = craneLib.cargoFmt { inherit src; };
+          fmt = craneLib.cargoFmt { inherit src; };
 
-            # Also verify the package builds
-            build = nativePackage;
-          };
+          # Also verify the package builds
+          build = nativePackage;
+        };
 
         # Instantiate native packages
         nativePackage = mkNativePackage { };
@@ -266,51 +262,52 @@
       {
         inherit checks;
 
-        packages =
-          {
-            default = nativePackage;
-            debug = debugPackage;
-          }
-          # Cross-compilation packages are only available on Linux hosts
-          // lib.optionalAttrs stdenv.isLinux {
-            # Linux ARM64 with glibc (standard Linux distros)
-            aarch64_unknown_linux_gnu = mkCrossPackage {
-              crossSystem = "aarch64-linux";
-              target = "aarch64-unknown-linux-gnu";
-              nodeName = "lightning-js.linux-arm64-gnu.node";
-            };
-
-            # Linux x86_64 with musl (dynamically linked to musl.so)
-            # Note: Uses -crt-static because cdylib output is incompatible with static musl
-            x86_64_unknown_linux_musl = mkCrossPackage {
-              crossSystem = localSystem;
-              target = "x86_64-unknown-linux-musl";
-              nodeName = "lightning-js.linux-x64-musl.node";
-              extraRustFlags = "-C target-feature=-crt-static";
-              useStaticLibs = true;
-              isMuslNative = true;
-            };
-
-            # Linux ARM64 with musl (dynamically linked to musl.so for cdylib compatibility)
-            aarch64_unknown_linux_musl = mkCrossPackage {
-              crossSystem = { config = "aarch64-unknown-linux-musl"; };
-              target = "aarch64-unknown-linux-musl";
-              nodeName = "lightning-js.linux-arm64-musl.node";
-              extraRustFlags = "-C target-feature=-crt-static";
-            };
-
-            # Android ARM64 (modern Android devices)
-            aarch64_linux_android = mkAndroidPackage {
-              target = "aarch64-linux-android";
-              nodeName = "lightning-js.android-arm64.node";
-            };
-
-            # Android ARMv7 (older 32-bit devices)
-            armv7_linux_androideabi = mkAndroidPackage {
-              target = "armv7-linux-androideabi";
-              nodeName = "lightning-js.android-arm-eabi.node";
-            };
+        packages = {
+          default = nativePackage;
+          debug = debugPackage;
+        }
+        # Cross-compilation packages are only available on Linux hosts
+        // lib.optionalAttrs stdenv.isLinux {
+          # Linux ARM64 with glibc (standard Linux distros)
+          aarch64_unknown_linux_gnu = mkCrossPackage {
+            crossSystem = "aarch64-linux";
+            target = "aarch64-unknown-linux-gnu";
+            nodeName = "lightning-js.linux-arm64-gnu.node";
           };
+
+          # Linux x86_64 with musl (dynamically linked to musl.so)
+          # Note: Uses -crt-static because cdylib output is incompatible with static musl
+          x86_64_unknown_linux_musl = mkCrossPackage {
+            crossSystem = localSystem;
+            target = "x86_64-unknown-linux-musl";
+            nodeName = "lightning-js.linux-x64-musl.node";
+            extraRustFlags = "-C target-feature=-crt-static";
+            useStaticLibs = true;
+            isMuslNative = true;
+          };
+
+          # Linux ARM64 with musl (dynamically linked to musl.so for cdylib compatibility)
+          aarch64_unknown_linux_musl = mkCrossPackage {
+            crossSystem = {
+              config = "aarch64-unknown-linux-musl";
+            };
+            target = "aarch64-unknown-linux-musl";
+            nodeName = "lightning-js.linux-arm64-musl.node";
+            extraRustFlags = "-C target-feature=-crt-static";
+          };
+
+          # Android ARM64 (modern Android devices)
+          aarch64_linux_android = mkAndroidPackage {
+            target = "aarch64-linux-android";
+            nodeName = "lightning-js.android-arm64.node";
+          };
+
+          # Android ARMv7 (older 32-bit devices)
+          armv7_linux_androideabi = mkAndroidPackage {
+            target = "armv7-linux-androideabi";
+            nodeName = "lightning-js.android-arm-eabi.node";
+          };
+        };
 
         devShells.default = pkgs.mkShell {
           name = "lightning-js-dev";
