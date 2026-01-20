@@ -1206,15 +1206,14 @@ impl MdkNode {
     } else {
       None
     };
-    eprintln!(
-      "[lightning-js] pay_out wait_for_payment_secs_normalized={wait_for_payment_secs:?}"
-    );
+    eprintln!("[lightning-js] pay_out wait_for_payment_secs_normalized={wait_for_payment_secs:?}");
 
     // Convert optional amount
     let requested_amount = match amount_msat {
       Some(amt) if amt <= 0 => return Err(payout_error_to_napi(PayOutError::AmountZero)),
       Some(amt) => {
-        let amt_u64 = u64::try_from(amt).map_err(|_| payout_error_to_napi(PayOutError::AmountTooLarge))?;
+        let amt_u64 =
+          u64::try_from(amt).map_err(|_| payout_error_to_napi(PayOutError::AmountTooLarge))?;
         Some(
           InstructionAmount::from_milli_sats(amt_u64)
             .map_err(|_| payout_error_to_napi(PayOutError::AmountTooLarge))?,
@@ -1224,9 +1223,8 @@ impl MdkNode {
     };
 
     let resolver = HTTPHrnResolver::new();
-    let runtime = create_current_thread_runtime().map_err(|e| {
-      payout_error_to_napi(PayOutError::RuntimeInit(e.to_string()))
-    })?;
+    let runtime = create_current_thread_runtime()
+      .map_err(|e| payout_error_to_napi(PayOutError::RuntimeInit(e.to_string())))?;
 
     eprintln!("[lightning-js] pay_out parsing payment instructions");
     let payment_instructions = runtime
@@ -1238,17 +1236,20 @@ impl MdkNode {
       ))
       .map_err(|e| payout_error_to_napi(PayOutError::Parse(format!("{e:?}"))))?;
 
-    eprintln!("[lightning-js] pay_out parsed instructions: {:?}", match &payment_instructions {
-      PaymentInstructions::FixedAmount(_) => "FixedAmount",
-      PaymentInstructions::ConfigurableAmount(_) => "ConfigurableAmount",
-    });
+    eprintln!(
+      "[lightning-js] pay_out parsed instructions: {:?}",
+      match &payment_instructions {
+        PaymentInstructions::FixedAmount(_) => "FixedAmount",
+        PaymentInstructions::ConfigurableAmount(_) => "ConfigurableAmount",
+      }
+    );
 
     // Resolve to fixed amount if needed
     let fixed_instructions = match payment_instructions {
       PaymentInstructions::FixedAmount(fixed) => fixed,
       PaymentInstructions::ConfigurableAmount(configurable) => {
-        let amount = requested_amount
-          .ok_or_else(|| payout_error_to_napi(PayOutError::AmountRequired))?;
+        let amount =
+          requested_amount.ok_or_else(|| payout_error_to_napi(PayOutError::AmountRequired))?;
         runtime
           .block_on(configurable.set_amount(amount, &resolver))
           .map_err(|e| payout_error_to_napi(PayOutError::Finalization(e)))?
@@ -1314,16 +1315,19 @@ impl MdkNode {
     let invoice_has_amount = invoice.amount_milli_satoshis().is_some();
 
     eprintln!("[lightning-js] pay_out_bolt11 starting node");
-    self.node.start().map_err(|error| {
-      payout_error_to_napi(PayOutError::NodeStart(error.to_string()))
-    })?;
+    self
+      .node
+      .start()
+      .map_err(|error| payout_error_to_napi(PayOutError::NodeStart(error.to_string())))?;
 
     eprintln!("[lightning-js] pay_out_bolt11 syncing wallets");
     if let Err(err) = self.node.sync_wallets() {
       if let Err(stop_err) = self.node.stop() {
         eprintln!("[lightning-js] Failed to stop node after wallet sync error: {stop_err}");
       }
-      return Err(payout_error_to_napi(PayOutError::WalletSync(err.to_string())));
+      return Err(payout_error_to_napi(PayOutError::WalletSync(
+        err.to_string(),
+      )));
     }
 
     let available_balance_msat: u64 = self
@@ -1333,7 +1337,10 @@ impl MdkNode {
       .filter(|channel| channel.is_channel_ready)
       .map(|channel| channel.outbound_capacity_msat)
       .sum();
-    eprintln!("[lightning-js] pay_out_bolt11 available_balance_msat={}", available_balance_msat);
+    eprintln!(
+      "[lightning-js] pay_out_bolt11 available_balance_msat={}",
+      available_balance_msat
+    );
 
     if available_balance_msat == 0 {
       if let Err(err) = self.node.stop() {
@@ -1361,19 +1368,29 @@ impl MdkNode {
           if let Err(stop_error) = self.node.stop() {
             eprintln!("[lightning-js] Failed to stop node after send error: {stop_error}");
           }
-          return Err(payout_error_to_napi(PayOutError::SendFailed(error.to_string())));
+          return Err(payout_error_to_napi(PayOutError::SendFailed(
+            error.to_string(),
+          )));
         }
       }
     } else {
       // Amountless invoice, use send_using_amount
-      match self.node.bolt11_payment().send_using_amount(invoice, amount_msat, None) {
+      match self
+        .node
+        .bolt11_payment()
+        .send_using_amount(invoice, amount_msat, None)
+      {
         Ok(payment_id) => payment_id,
         Err(error) => {
           eprintln!("[lightning-js] pay_out_bolt11 send_using_amount error: {error}");
           if let Err(stop_error) = self.node.stop() {
-            eprintln!("[lightning-js] Failed to stop node after send_using_amount error: {stop_error}");
+            eprintln!(
+              "[lightning-js] Failed to stop node after send_using_amount error: {stop_error}"
+            );
           }
-          return Err(payout_error_to_napi(PayOutError::SendFailed(error.to_string())));
+          return Err(payout_error_to_napi(PayOutError::SendFailed(
+            error.to_string(),
+          )));
         }
       }
     };
@@ -1421,9 +1438,10 @@ impl MdkNode {
     }
 
     eprintln!("[lightning-js] pay_out_bolt12 starting node");
-    self.node.start().map_err(|error| {
-      payout_error_to_napi(PayOutError::NodeStart(error.to_string()))
-    })?;
+    self
+      .node
+      .start()
+      .map_err(|error| payout_error_to_napi(PayOutError::NodeStart(error.to_string())))?;
 
     // Full RGS sync to get node announcements (addresses/features) needed for BOLT12
     eprintln!("[lightning-js] pay_out_bolt12 doing full RGS sync");
@@ -1443,7 +1461,9 @@ impl MdkNode {
       if let Err(stop_err) = self.node.stop() {
         eprintln!("[lightning-js] Failed to stop node after wallet sync error: {stop_err}");
       }
-      return Err(payout_error_to_napi(PayOutError::WalletSync(err.to_string())));
+      return Err(payout_error_to_napi(PayOutError::WalletSync(
+        err.to_string(),
+      )));
     }
     eprintln!("[lightning-js] pay_out_bolt12 wallet sync complete");
 
@@ -1523,7 +1543,9 @@ impl MdkNode {
         if let Err(stop_error) = self.node.stop() {
           eprintln!("[lightning-js] Failed to stop node after send error: {stop_error}");
         }
-        return Err(payout_error_to_napi(PayOutError::SendFailed(error.to_string())));
+        return Err(payout_error_to_napi(PayOutError::SendFailed(
+          error.to_string(),
+        )));
       }
     };
     eprintln!(
@@ -1532,9 +1554,7 @@ impl MdkNode {
     );
 
     if let Some(wait_secs) = wait_for_payment_secs {
-      eprintln!(
-        "[lightning-js] pay_out_bolt12 waiting for payment outcome wait_secs={wait_secs}"
-      );
+      eprintln!("[lightning-js] pay_out_bolt12 waiting for payment outcome wait_secs={wait_secs}");
       let wait_result = self.wait_for_payment_outcome(&payment_id, wait_secs);
 
       if let Err(err) = self.node.stop() {
@@ -1707,7 +1727,10 @@ enum PayOutError {
   /// No outbound capacity available.
   NoOutboundCapacity,
   /// Insufficient outbound capacity.
-  InsufficientCapacity { required_msat: u64, available_msat: u64 },
+  InsufficientCapacity {
+    required_msat: u64,
+    available_msat: u64,
+  },
   /// Failed to send payment.
   SendFailed(String),
   /// Unsupported currency in Bolt12 offer.
