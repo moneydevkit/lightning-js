@@ -4,6 +4,7 @@ env:
   APP_NAME: lightning-js
   MACOSX_DEPLOYMENT_TARGET: '10.13'
   CARGO_INCREMENTAL: '1'
+  RUST_VERSION: '1.85'
 permissions:
   contents: write
   id-token: write
@@ -61,21 +62,28 @@ jobs:
             target: x86_64-apple-darwin
             build: yarn build --target x86_64-apple-darwin
           - host: windows-latest
-            build: yarn build --target x86_64-pc-windows-msvc
             target: x86_64-pc-windows-msvc
+            build: yarn build --target x86_64-pc-windows-msvc
           - host: windows-latest
-            build: yarn build --target i686-pc-windows-msvc
             target: i686-pc-windows-msvc
+            build: yarn build --target i686-pc-windows-msvc
           - host: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian
-            build: yarn build --target x86_64-unknown-linux-gnu
+            build: |
+              rustup install $RUST_VERSION
+              rustup default $RUST_VERSION
+              rustup target add x86_64-unknown-linux-gnu
+              yarn build --target x86_64-unknown-linux-gnu
           - host: ubuntu-latest
             target: x86_64-unknown-linux-musl
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-alpine
             build: |
               export CC=gcc
               export CXX=g++
+              rustup install $RUST_VERSION
+              rustup default $RUST_VERSION
+              rustup target add x86_64-unknown-linux-musl
               yarn build --target x86_64-unknown-linux-musl
           - host: macos-latest
             target: aarch64-apple-darwin
@@ -92,18 +100,30 @@ jobs:
               export AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar
               export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
               export CFLAGS_aarch64_unknown_linux_gnu="-DAT_HWCAP2=26"
+              rustup install $RUST_VERSION
+              rustup default $RUST_VERSION
+              rustup target add aarch64-unknown-linux-gnu
               yarn build --target aarch64-unknown-linux-gnu
           - host: ubuntu-latest
             target: aarch64-linux-android
-            build: yarn build --target aarch64-linux-android
+            build: |
+              export ANDROID_NDK_HOME="${ANDROID_NDK_ROOT:-$ANDROID_NDK_LATEST_HOME}"
+              export TOOLCHAIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
+              export CC_aarch64_linux_android="$TOOLCHAIN/bin/aarch64-linux-android28-clang"
+              export CXX_aarch64_linux_android="$TOOLCHAIN/bin/aarch64-linux-android28-clang++"
+              export AR_aarch64_linux_android="$TOOLCHAIN/bin/llvm-ar"
+              export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$TOOLCHAIN/bin/aarch64-linux-android28-clang"
+              yarn build --target aarch64-linux-android
           - host: ubuntu-latest
             target: aarch64-unknown-linux-musl
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-alpine
-            build: |-
-              set -e &&
+            build: |
+              set -e
               export CC=aarch64-linux-musl-gcc
               export CXX=aarch64-linux-musl-g++
-              rustup target add aarch64-unknown-linux-musl &&
+              rustup install $RUST_VERSION
+              rustup default $RUST_VERSION
+              rustup target add aarch64-unknown-linux-musl
               yarn build --target aarch64-unknown-linux-musl
           - host: windows-latest
             target: aarch64-pc-windows-msvc
@@ -125,7 +145,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         if: ${{ !matrix.settings.docker }}
         with:
-          toolchain: stable
+          toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ matrix.settings.target }}
       - name: Cache cargo
         uses: actions/cache@v4
@@ -137,10 +157,6 @@ jobs:
             .cargo-cache
             target/
           key: ${{ matrix.settings.target }}-cargo-${{ matrix.settings.host }}
-      - name: Setup toolchain
-        run: ${{ matrix.settings.setup }}
-        if: ${{ matrix.settings.setup }}
-        shell: bash
       - name: Install dependencies
         run: yarn install
       - name: Build in docker
@@ -148,7 +164,7 @@ jobs:
         if: ${{ matrix.settings.docker }}
         with:
           image: ${{ matrix.settings.docker }}
-          options: '--user 0:0 -v ${{ github.workspace }}/.cargo-cache/git/db:/usr/local/cargo/git/db -v ${{ github.workspace }}/.cargo/registry/cache:/usr/local/cargo/registry/cache -v ${{ github.workspace }}/.cargo/registry/index:/usr/local/cargo/registry/index -v ${{ github.workspace }}:/build -w /build'
+          options: '--user 0:0 -e RUST_VERSION=${{ env.RUST_VERSION }} -v ${{ github.workspace }}/.cargo-cache/git/db:/usr/local/cargo/git/db -v ${{ github.workspace }}/.cargo/registry/cache:/usr/local/cargo/registry/cache -v ${{ github.workspace }}/.cargo/registry/index:/usr/local/cargo/registry/index -v ${{ github.workspace }}:/build -w /build'
           run: ${{ matrix.settings.build }}
       - name: Build
         run: ${{ matrix.settings.build }}

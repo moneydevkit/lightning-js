@@ -6,28 +6,29 @@ use std::{
   fmt::{self, Write},
   str::FromStr,
   sync::{
-    atomic::{AtomicU8, Ordering},
     Arc, OnceLock, RwLock,
+    atomic::{AtomicU8, Ordering},
   },
   time::{Duration, Instant},
 };
 
 use bitcoin_payment_instructions::{
-  amount::Amount as InstructionAmount, hrn_resolution::HrnResolver, http_resolver::HTTPHrnResolver,
-  ParseError, PaymentInstructions, PaymentMethod,
+  ParseError, PaymentInstructions, PaymentMethod, amount::Amount as InstructionAmount,
+  hrn_resolution::HrnResolver, http_resolver::HTTPHrnResolver,
 };
 use napi::{
-  threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode},
   Env, JsFunction, Status,
+  threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode},
 };
 
 use ldk_node::logger::{LogLevel, LogRecord, LogWriter};
 use ldk_node::{
+  Builder, Event, Node,
   bip39::Mnemonic,
   bitcoin::{
-    hashes::{sha256, Hash},
-    secp256k1::PublicKey,
     Network,
+    hashes::{Hash, sha256},
+    secp256k1::PublicKey,
   },
   config::Config,
   generate_entropy_mnemonic,
@@ -38,7 +39,6 @@ use ldk_node::{
     util::scid_utils,
   },
   lightning_invoice::{Bolt11Invoice, Bolt11InvoiceDescription, Description},
-  Builder, Event, Node,
 };
 use tokio::runtime::Runtime;
 
