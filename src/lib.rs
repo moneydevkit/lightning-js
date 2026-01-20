@@ -1208,10 +1208,9 @@ impl MdkNode {
     };
     eprintln!("[lightning-js] pay_out wait_for_payment_secs_normalized={wait_for_payment_secs:?}");
 
-    // Convert optional amount
+    // Convert optional amount (treat <= 0 as None since amount is ignored for fixed-amount instructions)
     let requested_amount = match amount_msat {
-      Some(amt) if amt <= 0 => return Err(payout_error_to_napi(PayOutError::AmountZero)),
-      Some(amt) => {
+      Some(amt) if amt > 0 => {
         let amt_u64 =
           u64::try_from(amt).map_err(|_| payout_error_to_napi(PayOutError::AmountTooLarge))?;
         Some(
@@ -1219,7 +1218,7 @@ impl MdkNode {
             .map_err(|_| payout_error_to_napi(PayOutError::AmountTooLarge))?,
         )
       }
-      None => None,
+      _ => None,
     };
 
     let resolver = HTTPHrnResolver::new();
