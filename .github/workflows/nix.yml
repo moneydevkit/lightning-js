@@ -43,13 +43,13 @@ jobs:
     needs: check
     strategy:
       fail-fast: false
-      max-parallel: 3
       matrix:
         target:
           - x86_64_unknown_linux_gnu
           - aarch64_unknown_linux_gnu
           - x86_64_unknown_linux_musl
           - aarch64_unknown_linux_musl
+          - aarch64_linux_android
         include:
           # x86_64 glibc uses 'default' - the native build on ubuntu runners
           - target: x86_64_unknown_linux_gnu
@@ -78,47 +78,16 @@ jobs:
           path: result/lib/*.node
           if-no-files-found: error
 
-  build-android:
+  build-macos:
     name: Build - ${{ matrix.target }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     needs: check
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - aarch64_linux_android
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
-        with:
-          extra-conf: |
-            extra-substituters = https://cache.nixos.org
-            extra-trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
-
-      - name: Enable Nix cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
-
-      - name: Build ${{ matrix.target }}
-        run: nix build .#${{ matrix.target }} --print-out-paths
-
-      - name: List output
-        run: |
-          ls -la result/lib/
-          file result/lib/*.node
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: bindings-${{ matrix.target }}
-          path: result/lib/*.node
-          if-no-files-found: error
-
-  build-macos:
-    name: Build - macOS arm64
-    runs-on: macos-latest
-    needs: check
+        include:
+          - target: darwin-arm64
+            runner: macos-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -139,7 +108,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: bindings-darwin-arm64
+          name: bindings-${{ matrix.target }}
           path: result/lib/*.node
           if-no-files-found: error
 
@@ -151,7 +120,6 @@ jobs:
     needs:
       - check
       - build-linux
-      - build-android
       - build-macos
     steps:
       - uses: actions/checkout@v4
