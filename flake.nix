@@ -62,8 +62,18 @@
           # Find and copy the shared library with NAPI-RS naming convention
           # Cargo builds a cdylib (.so on Linux, .dylib on macOS)
           # Node.js expects native addons to have .node extension
-          if ! find target -name "liblightning_js.so" -exec cp {} $out/lib/${nodeName} \; 2>/dev/null; then
-            find target -name "liblightning_js.dylib" -exec cp {} $out/lib/${nodeName} \; 2>/dev/null || true
+          found=""
+          for ext in so dylib; do
+            lib=$(find target -name "liblightning_js.$ext" -type f | head -1)
+            if [ -n "$lib" ]; then
+              cp "$lib" "$out/lib/${nodeName}"
+              found=1
+              break
+            fi
+          done
+          if [ -z "$found" ]; then
+            echo "ERROR: Could not find liblightning_js.so or liblightning_js.dylib"
+            exit 1
           fi
         '';
 
