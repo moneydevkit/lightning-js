@@ -193,7 +193,6 @@
             ndkPrefix =
               {
                 "aarch64-linux-android" = "aarch64-linux-android";
-                "armv7-linux-androideabi" = "armv7a-linux-androideabi";
               }
               .${target};
 
@@ -203,10 +202,6 @@
                 "aarch64-linux-android" = {
                   lower = "aarch64_linux_android";
                   upper = "AARCH64_LINUX_ANDROID";
-                };
-                "armv7-linux-androideabi" = {
-                  lower = "armv7_linux_androideabi";
-                  upper = "ARMV7_LINUX_ANDROIDEABI";
                 };
               }
               .${target};
@@ -300,12 +295,6 @@
           aarch64_linux_android = mkAndroidPackage {
             target = "aarch64-linux-android";
             nodeName = "lightning-js.android-arm64.node";
-          };
-
-          # Android ARMv7 (older 32-bit devices)
-          armv7_linux_androideabi = mkAndroidPackage {
-            target = "armv7-linux-androideabi";
-            nodeName = "lightning-js.android-arm-eabi.node";
           };
         };
 

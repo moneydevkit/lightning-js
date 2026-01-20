@@ -43,6 +43,7 @@ jobs:
     needs: check
     strategy:
       fail-fast: false
+      max-parallel: 3
       matrix:
         target:
           - x86_64_unknown_linux_gnu
@@ -86,7 +87,6 @@ jobs:
       matrix:
         target:
           - aarch64_linux_android
-          - armv7_linux_androideabi
     steps:
       - uses: actions/checkout@v4
 
