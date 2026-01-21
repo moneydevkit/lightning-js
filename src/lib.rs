@@ -830,13 +830,8 @@ impl MdkNode {
       panic!("failed to sync wallets: {err}");
     }
 
-    let available_balance_msat: u64 = self
-      .node
-      .list_channels()
-      .into_iter()
-      .filter(|channel| channel.is_channel_ready)
-      .map(|channel| channel.outbound_capacity_msat)
-      .sum();
+    wait_for_usable_channels(&self.node, 5000, 100);
+    let available_balance_msat = usable_outbound_capacity_msat(&self.node);
     eprintln!("[lightning-js] pay_lnurl available_balance_msat={available_balance_msat}");
 
     if available_balance_msat == 0 {
@@ -927,13 +922,9 @@ impl MdkNode {
       )
     })?;
 
-    let available_balance_msat: u64 = self
-      .node
-      .list_channels()
-      .into_iter()
-      .filter(|channel| channel.is_channel_ready)
-      .map(|channel| channel.outbound_capacity_msat)
-      .sum();
+    wait_for_usable_channels(&self.node, 5000, 100);
+    let available_balance_msat = usable_outbound_capacity_msat(&self.node);
+    eprintln!("[lightning-js] pay_bolt11 available_balance_msat={available_balance_msat}");
 
     if available_balance_msat == 0 {
       if let Err(err) = self.node.stop() {
@@ -1063,20 +1054,11 @@ impl MdkNode {
     }
     eprintln!("[lightning-js] pay_bolt12_offer wallet sync complete");
 
-    let channels = self.node.list_channels();
-    let ready_channels: Vec<_> = channels
-      .iter()
-      .filter(|channel| channel.is_channel_ready)
-      .collect();
-    let available_balance_msat: u64 = ready_channels
-      .iter()
-      .map(|channel| channel.outbound_capacity_msat)
-      .sum();
+    wait_for_usable_channels(&self.node, 5000, 100);
+    let available_balance_msat = usable_outbound_capacity_msat(&self.node);
 
     eprintln!(
-      "[lightning-js] pay_bolt12_offer channels: total={} ready={} available_balance_msat={}",
-      channels.len(),
-      ready_channels.len(),
+      "[lightning-js] pay_bolt12_offer available_balance_msat={}",
       available_balance_msat
     );
 
@@ -1184,6 +1166,42 @@ impl MdkNode {
     );
     Ok(bytes_to_hex(&payment_id.0))
   }
+}
+
+/// Wait for all channels to become usable after node startup/sync.
+fn wait_for_usable_channels(node: &Node, max_wait_ms: u64, poll_interval_ms: u64) {
+  let start = Instant::now();
+
+  loop {
+    let channels = node.list_channels();
+    let total = channels.len();
+    let usable = channels.iter().filter(|c| c.is_usable).count();
+
+    if total > 0 && usable == total {
+      eprintln!(
+        "[lightning-js] All channels usable ({usable}/{total}) after {}ms",
+        start.elapsed().as_millis()
+      );
+      return;
+    }
+
+    if start.elapsed().as_millis() as u64 >= max_wait_ms {
+      eprintln!("[lightning-js] Timeout: {usable}/{total} channels usable after {max_wait_ms}ms",);
+      return;
+    }
+
+    std::thread::sleep(Duration::from_millis(poll_interval_ms));
+  }
+}
+
+/// Compute total outbound capacity across all usable channels.
+fn usable_outbound_capacity_msat(node: &Node) -> u64 {
+  node
+    .list_channels()
+    .iter()
+    .filter(|c| c.is_usable)
+    .map(|c| c.outbound_capacity_msat)
+    .sum()
 }
 
 fn scid_from_human_readable_string(human_readable_scid: &str) -> Result<u64, ()> {
