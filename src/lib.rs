@@ -206,7 +206,7 @@ pub fn set_log_listener(
 
 #[napi]
 pub fn generate_mnemonic() -> String {
-  generate_entropy_mnemonic().to_string()
+  generate_entropy_mnemonic(None).to_string()
 }
 
 fn derive_vss_identifier(mnemonic: &Mnemonic) -> String {
@@ -1133,6 +1133,7 @@ impl MdkNode {
       amount_to_send_msat,
       None,
       Some("A payment by MoneyDevKit".to_string()),
+      None,
     ) {
       Ok(payment_id) => payment_id,
       Err(error) => {
