@@ -46,6 +46,12 @@ use tokio::runtime::Runtime;
 #[macro_use]
 extern crate napi_derive;
 
+/// Polling interval for event loops and state checks.
+const POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+/// Max time to wait for channels to become usable after sync.
+const CHANNEL_USABLE_TIMEOUT: Duration = Duration::from_secs(10);
+
 static GLOBAL_LOGGER: OnceLock<Arc<JsLogger>> = OnceLock::new();
 
 fn logger_instance() -> &'static Arc<JsLogger> {
@@ -566,7 +572,7 @@ impl MdkNode {
         last_event_time = now;
       }
 
-      std::thread::sleep(std::time::Duration::from_millis(10));
+      std::thread::sleep(POLL_INTERVAL);
     }
 
     if let Err(err) = self.node.stop() {
@@ -753,7 +759,7 @@ impl MdkNode {
         return Ok(());
       }
 
-      std::thread::sleep(Duration::from_millis(50));
+      std::thread::sleep(POLL_INTERVAL);
     }
   }
 
@@ -830,7 +836,7 @@ impl MdkNode {
       panic!("failed to sync wallets: {err}");
     }
 
-    wait_for_usable_channels(&self.node, 5000, 100);
+    wait_for_usable_channels(&self.node);
     let available_balance_msat = usable_outbound_capacity_msat(&self.node);
     eprintln!("[lightning-js] pay_lnurl available_balance_msat={available_balance_msat}");
 
@@ -922,7 +928,7 @@ impl MdkNode {
       )
     })?;
 
-    wait_for_usable_channels(&self.node, 5000, 100);
+    wait_for_usable_channels(&self.node);
     let available_balance_msat = usable_outbound_capacity_msat(&self.node);
     eprintln!("[lightning-js] pay_bolt11 available_balance_msat={available_balance_msat}");
 
@@ -1054,7 +1060,7 @@ impl MdkNode {
     }
     eprintln!("[lightning-js] pay_bolt12_offer wallet sync complete");
 
-    wait_for_usable_channels(&self.node, 5000, 100);
+    wait_for_usable_channels(&self.node);
     let available_balance_msat = usable_outbound_capacity_msat(&self.node);
 
     eprintln!(
@@ -1169,7 +1175,7 @@ impl MdkNode {
 }
 
 /// Wait for all channels to become usable after node startup/sync.
-fn wait_for_usable_channels(node: &Node, max_wait_ms: u64, poll_interval_ms: u64) {
+fn wait_for_usable_channels(node: &Node) {
   let start = Instant::now();
 
   loop {
@@ -1185,12 +1191,15 @@ fn wait_for_usable_channels(node: &Node, max_wait_ms: u64, poll_interval_ms: u64
       return;
     }
 
-    if start.elapsed().as_millis() as u64 >= max_wait_ms {
-      eprintln!("[lightning-js] Timeout: {usable}/{total} channels usable after {max_wait_ms}ms",);
+    if start.elapsed() >= CHANNEL_USABLE_TIMEOUT {
+      eprintln!(
+        "[lightning-js] Timeout: {usable}/{total} channels usable after {}s",
+        CHANNEL_USABLE_TIMEOUT.as_secs()
+      );
       return;
     }
 
-    std::thread::sleep(Duration::from_millis(poll_interval_ms));
+    std::thread::sleep(POLL_INTERVAL);
   }
 }
 
