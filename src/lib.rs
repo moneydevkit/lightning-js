@@ -1535,6 +1535,7 @@ impl MdkNode {
       amount_to_send_msat,
       None,
       Some("A payment by MoneyDevKit".to_string()),
+      None,
     ) {
       Ok(payment_id) => payment_id,
       Err(error) => {

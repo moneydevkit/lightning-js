@@ -8,9 +8,8 @@ version      = "0.1.0"
 crate-type = ["cdylib"]
 
 [dependencies]
-bitcoin-payment-instructions = { version = "0.5.0", default-features = false, features = [
-  "http",
-] }
+# Branch: https://github.com/moneydevkit/bitcoin-payment-instructions/commits/2025-12-ldk-node-base/
+bitcoin-payment-instructions = { git = "https://github.com/moneydevkit/bitcoin-payment-instructions", rev = "6796e87525d6c564e1332354a808730e2ba2ebf8", default-features = false, features = ["http"]}
 # Branch: https://github.com/moneydevkit/ldk-node/commits/lsp-0.7.0_accept-underpaying-htlcs_with_timing_logs
 ldk-node    = { default-features = false, git = "https://github.com/moneydevkit/ldk-node.git", rev = "e0486f9970b43d6cbaed9bd89e101afddac210b9" }
 napi        = { version = "2", features = ["napi4"] }
@@ -30,6 +29,6 @@ lightning-invoice = "0.33.2"
 
 # Patch lightning crates so bitcoin-payment-instructions uses the same versions as ldk-node
 # This avoids type mismatches between the two crates' Bolt11Invoice/Offer types
-[patch.crates-io]
-lightning = { git = "https://github.com/moneydevkit/rust-lightning", rev = "42bad4fd3c908958b96b6b70ed63bd6aa3cbaf5f" }
-lightning-invoice = { git = "https://github.com/moneydevkit/rust-lightning", rev = "42bad4fd3c908958b96b6b70ed63bd6aa3cbaf5f" }
+[patch."https://github.com/lightningdevkit/rust-lightning"]
+lightning = { git = "https://github.com/moneydevkit/rust-lightning", rev = "f374ac6439ae68852776b40ea869010f1b2ff9eb" }
+lightning-invoice = { git = "https://github.com/moneydevkit/rust-lightning", rev = "f374ac6439ae68852776b40ea869010f1b2ff9eb" }
