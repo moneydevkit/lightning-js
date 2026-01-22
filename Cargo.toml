@@ -11,8 +11,8 @@ crate-type = ["cdylib"]
 bitcoin-payment-instructions = { version = "0.5.0", default-features = false, features = [
   "http",
 ] }
-# Branch: https://github.com/moneydevkit/ldk-node/commits/lsp-0.6.2_accept-unerpaying-htlcs/
-ldk-node    = { default-features = false, git = "https://github.com/moneydevkit/ldk-node.git", rev = "a917b15d580453e0ea4da59b2d7881c899e4fbce" }
+# Branch: https://github.com/moneydevkit/ldk-node/commits/lsp-0.7.0_accept-underpaying-htlcs_with_timing_logs
+ldk-node    = { default-features = false, git = "https://github.com/moneydevkit/ldk-node.git", rev = "e0486f9970b43d6cbaed9bd89e101afddac210b9" }
 napi        = { version = "2", features = ["napi4"] }
 napi-derive = "2"
 tokio       = { version = "1", features = ["rt-multi-thread"] }
