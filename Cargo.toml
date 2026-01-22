@@ -22,7 +22,10 @@ writeable   = { version = "=0.6.2", features = ["alloc"] }
 napi-build = "=2.2.4"
 
 [profile.release]
-lto = true
+opt-level = 3          # Maximum runtime performance
+lto = true             # Link-time optimization for smaller/faster binary
+codegen-units = 1      # Better optimization (slower compile)
+strip = "debuginfo"    # Remove debug info but keep symbols for crash reports
 
 [dev-dependencies]
 bitcoin           = "0.32"
