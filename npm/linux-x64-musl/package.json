@@ -1,6 +1,6 @@
 {
   "name": "@moneydevkit/lightning-js-linux-x64-musl",
-  "version": "0.1.60",
+  "version": "0.1.61",
   "os": [
     "linux"
   ],
