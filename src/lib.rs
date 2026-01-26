@@ -241,6 +241,14 @@ pub struct ReceivedPayment {
 }
 
 #[napi(object)]
+pub struct PaymentEvent {
+  pub event_type: String,
+  pub payment_hash: String,
+  pub amount_msat: Option<i64>,
+  pub reason: Option<String>,
+}
+
+#[napi(object)]
 pub struct NodeChannel {
   pub channel_id: String,
   pub counterparty_node_id: String,
@@ -324,6 +332,97 @@ impl MdkNode {
       eprintln!("[lightning-js] Failed to stop node via stop(): {err}");
       panic!("failed to stop node: {err}");
     }
+  }
+
+  /// Start the node and sync wallets. Call once before polling for events.
+  #[napi]
+  pub fn start_receiving(&self) -> napi::Result<()> {
+    self.node.start().map_err(|e| {
+      eprintln!("[lightning-js] Failed to start node in start_receiving: {e}");
+      napi::Error::from_reason(format!("Failed to start: {e}"))
+    })?;
+
+    self.node.sync_wallets().map_err(|e| {
+      eprintln!("[lightning-js] Failed to sync wallets in start_receiving: {e}");
+      let _ = self.node.stop();
+      napi::Error::from_reason(format!("Failed to sync: {e}"))
+    })
+  }
+
+  /// Get the next payment event without ACKing it.
+  /// Returns None if no events are available.
+  /// Call ack_event() after successfully handling the event.
+  #[napi]
+  pub fn next_event(&self) -> Option<PaymentEvent> {
+    loop {
+      match self.node.next_event() {
+        Some(event) => {
+          let payment_event = match &event {
+            Event::PaymentClaimable {
+              payment_hash,
+              claimable_amount_msat,
+              ..
+            } => Some(PaymentEvent {
+              event_type: "claimable".to_string(),
+              payment_hash: bytes_to_hex(&payment_hash.0),
+              amount_msat: Some(*claimable_amount_msat as i64),
+              reason: None,
+            }),
+            Event::PaymentReceived {
+              payment_hash,
+              amount_msat,
+              ..
+            } => Some(PaymentEvent {
+              event_type: "received".to_string(),
+              payment_hash: bytes_to_hex(&payment_hash.0),
+              amount_msat: Some(*amount_msat as i64),
+              reason: None,
+            }),
+            Event::PaymentFailed {
+              payment_hash,
+              reason,
+              ..
+            } => payment_hash.map(|h| PaymentEvent {
+              event_type: "failed".to_string(),
+              payment_hash: bytes_to_hex(&h.0),
+              amount_msat: None,
+              reason: reason.map(|r| format!("{r:?}")),
+            }),
+            _ => None,
+          };
+
+          // If this is a payment event we care about, return it (without ACKing)
+          if payment_event.is_some() {
+            return payment_event;
+          }
+
+          // For non-payment events, ACK and continue to next event
+          // Potentially problematic if a payout is happening at the same time
+          // but this is the existing behavior.
+          let _ = self.node.event_handled();
+        }
+        None => return None,
+      }
+    }
+  }
+
+  /// ACK the current event after successfully handling it.
+  /// Must be called after next_event() returns an event, before calling next_event() again.
+  #[napi]
+  pub fn ack_event(&self) -> napi::Result<()> {
+    self
+      .node
+      .event_handled()
+      .map_err(|e| napi::Error::from_reason(format!("Failed to ack event: {e}")))
+  }
+
+  /// Stop the node. Call when done polling.
+  #[napi]
+  pub fn stop_receiving(&self) -> napi::Result<()> {
+    self
+      .node
+      .stop()
+      .map_err(|e| napi::Error::from_reason(format!("Failed to stop: {e}")))
   }
 
   #[napi]
