@@ -3,7 +3,7 @@
 use std::{
   collections::{HashMap, HashSet},
   convert::TryFrom,
-  fmt::{self, Write},
+  fmt::Write,
   str::FromStr,
   sync::{
     Arc, OnceLock, RwLock,
@@ -13,8 +13,8 @@ use std::{
 };
 
 use bitcoin_payment_instructions::{
-  ParseError, PaymentInstructions, PaymentMethod, amount::Amount as InstructionAmount,
-  hrn_resolution::HrnResolver, http_resolver::HTTPHrnResolver,
+  PaymentInstructions, PaymentMethod, amount::Amount as InstructionAmount,
+  http_resolver::HTTPHrnResolver,
 };
 use napi::{
   Env, JsFunction, Status,
@@ -33,11 +33,7 @@ use ldk_node::{
   config::Config,
   generate_entropy_mnemonic,
   lightning::ln::channelmanager::PaymentId,
-  lightning::{
-    ln::msgs::SocketAddress,
-    offers::offer::{Amount, Offer},
-    util::scid_utils,
-  },
+  lightning::{ln::msgs::SocketAddress, offers::offer::Offer, util::scid_utils},
   lightning_invoice::{Bolt11Invoice, Bolt11InvoiceDescription, Description},
   lightning_types::payment::PaymentHash,
 };
@@ -51,6 +47,20 @@ const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 /// Max time to wait for channels to become usable after sync.
 const CHANNEL_USABLE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Internal enum representing a resolved payment target with amount
+enum PaymentTarget {
+  Bolt11(Bolt11Invoice, u64), // invoice + amount_msat
+  Bolt12(Box<Offer>, u64),    // offer + amount_msat
+}
+
+impl PaymentTarget {
+  fn amount_msat(&self) -> u64 {
+    match self {
+      PaymentTarget::Bolt11(_, amount) | PaymentTarget::Bolt12(_, amount) => *amount,
+    }
+  }
+}
 
 static GLOBAL_LOGGER: OnceLock<Arc<JsLogger>> = OnceLock::new();
 
@@ -869,414 +879,210 @@ impl MdkNode {
     }
   }
 
+  /// Unified payment method that auto-detects the destination type.
+  ///
+  /// Only supports variable-amount destinations where we set the amount:
+  /// - BOLT12 offers (lno...)
+  /// - LNURL (lnurl...)
+  /// - Lightning addresses (user@domain)
+  /// - Zero-amount BOLT11 invoices
+  ///
+  /// BOLT11 invoices with embedded amounts are rejected - use a variable-amount
+  /// destination instead. The amount_msat parameter is always required.
   #[napi]
-  pub fn pay_lnurl(
+  pub fn pay(
     &self,
-    lnurl: String,
+    destination: String,
     amount_msat: i64,
     wait_for_payment_secs: Option<i64>,
   ) -> napi::Result<String> {
     eprintln!(
-      "[lightning-js] pay_lnurl called lnurl={} amount_msat={} wait_for_payment_secs={:?}",
-      lnurl, amount_msat, wait_for_payment_secs
+      "[lightning-js] pay called destination={} amount_msat={} wait_for_payment_secs={:?}",
+      destination, amount_msat, wait_for_payment_secs
     );
 
-    if amount_msat <= 0 {
-      return Err(napi::Error::new(
-        Status::InvalidArg,
-        "amount must be greater than zero".to_string(),
-      ));
-    }
+    // Validate amount
+    let amount_msat = u64::try_from(amount_msat)
+      .ok()
+      .filter(|&a| a > 0)
+      .ok_or_else(|| {
+        napi::Error::new(Status::InvalidArg, "amount_msat must be greater than zero")
+      })?;
 
-    let amount_msat_u64 = u64::try_from(amount_msat).map_err(|_| {
-      napi::Error::new(
-        Status::InvalidArg,
-        "amount must be representable as an unsigned 64-bit value".to_string(),
-      )
-    })?;
+    let wait_secs = wait_for_payment_secs.and_then(|s| if s > 0 { Some(s as u64) } else { None });
 
-    let requested_amount = InstructionAmount::from_milli_sats(amount_msat_u64).map_err(|_| {
-      napi::Error::new(
-        Status::InvalidArg,
-        "amount exceeds supported maximum (21 million BTC)".to_string(),
-      )
-    })?;
-
-    let wait_for_payment_secs = wait_for_payment_secs.unwrap_or(0);
-    let wait_for_payment_secs = if wait_for_payment_secs > 0 {
-      Some(wait_for_payment_secs as u64)
-    } else {
-      None
-    };
-    eprintln!(
-      "[lightning-js] pay_lnurl wait_for_payment_secs_normalized={wait_for_payment_secs:?}"
-    );
-
+    // Parse destination and resolve to payment method
     let resolver = HTTPHrnResolver::new();
-    let runtime = create_current_thread_runtime().map_err(lnurl_error_to_napi)?;
-    eprintln!("[lightning-js] pay_lnurl resolving lnurl invoice");
-    let invoice = resolve_lnurl_invoice_with_runtime(
-      &runtime,
-      &resolver,
-      &lnurl,
-      requested_amount,
-      self.network,
-    )
-    .map_err(lnurl_error_to_napi)?;
+    let runtime = create_current_thread_runtime()?;
+
+    eprintln!("[lightning-js] pay parsing destination");
+    let payment_instructions = runtime
+      .block_on(PaymentInstructions::parse(
+        &destination,
+        self.network,
+        &resolver,
+        true,
+      ))
+      .map_err(|err| {
+        napi::Error::new(
+          Status::InvalidArg,
+          format!("failed to parse destination: {err:?}"),
+        )
+      })?;
+
+    // Only allow configurable amount destinations
+    let configurable = match payment_instructions {
+      PaymentInstructions::FixedAmount(_) => {
+        return Err(napi::Error::new(
+          Status::InvalidArg,
+          "destination has a pre-set amount; only variable-amount destinations are supported",
+        ));
+      }
+      PaymentInstructions::ConfigurableAmount(c) => c,
+    };
+
+    // Set the amount
+    let requested_amount = InstructionAmount::from_milli_sats(amount_msat)
+      .map_err(|_| napi::Error::new(Status::InvalidArg, "amount exceeds maximum"))?;
+    let fixed = runtime
+      .block_on(configurable.set_amount(requested_amount, &resolver))
+      .map_err(|err| {
+        napi::Error::new(
+          Status::GenericFailure,
+          format!("failed to set amount: {err}"),
+        )
+      })?;
+
+    // Find a supported payment method
+    let methods = fixed.methods();
     eprintln!(
-      "[lightning-js] pay_lnurl resolved invoice payment_hash={}",
-      invoice.payment_hash()
+      "[lightning-js] pay resolved {} payment method(s)",
+      methods.len()
     );
 
-    eprintln!("[lightning-js] pay_lnurl starting node");
-    self.node.start().map_err(|error| {
-      napi::Error::new(
-        Status::GenericFailure,
-        format!("failed to start node prior to paying lnurl: {error}"),
-      )
-    })?;
+    let payment_target = methods
+      .iter()
+      .find_map(|m| match m {
+        PaymentMethod::LightningBolt11(inv) => Bolt11Invoice::from_str(&inv.to_string())
+          .ok()
+          .map(|i| PaymentTarget::Bolt11(i, amount_msat)),
+        PaymentMethod::LightningBolt12(offer) => Offer::from_str(&offer.to_string())
+          .ok()
+          .map(|o| PaymentTarget::Bolt12(Box::new(o), amount_msat)),
+        _ => None,
+      })
+      .ok_or_else(|| {
+        napi::Error::new(Status::GenericFailure, "no supported payment method found")
+      })?;
 
-    eprintln!("[lightning-js] pay_lnurl syncing wallets");
-    if let Err(err) = self.node.sync_wallets() {
-      eprintln!("[lightning-js] Failed to sync wallets: {err}");
-      panic!("failed to sync wallets: {err}");
+    // Validate BOLT11 invoice amount matches requested (protects against malicious LNURL services)
+    if let PaymentTarget::Bolt11(ref invoice, _) = payment_target {
+      if let Some(invoice_amount) = invoice.amount_milli_satoshis() {
+        if invoice_amount != amount_msat {
+          return Err(napi::Error::new(
+            Status::InvalidArg,
+            format!(
+              "invoice amount ({invoice_amount}msat) does not match requested amount ({amount_msat}msat)"
+            ),
+          ));
+        }
+      }
     }
 
-    wait_for_usable_channels(&self.node);
-    let available_balance_msat = usable_outbound_capacity_msat(&self.node);
-    eprintln!("[lightning-js] pay_lnurl available_balance_msat={available_balance_msat}");
+    // Execute payment
+    self.execute_payment(payment_target, wait_secs)
+  }
 
-    if available_balance_msat == 0 {
-      if let Err(err) = self.node.stop() {
-        eprintln!(
-          "[lightning-js] Failed to stop node after checking lnurl outbound capacity: {err}"
-        );
-      }
+  /// Execute a payment after destination has been resolved
+  fn execute_payment(&self, target: PaymentTarget, wait_secs: Option<u64>) -> napi::Result<String> {
+    // Start node
+    self.node.start().map_err(|e| {
+      napi::Error::new(Status::GenericFailure, format!("failed to start node: {e}"))
+    })?;
+
+    // BOLT12 requires full RGS sync for onion message routing
+    if matches!(target, PaymentTarget::Bolt12(_, _)) {
+      eprintln!("[lightning-js] doing full RGS sync for BOLT12");
+      let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
+      rt.block_on(async {
+        match self.node.sync_rgs(true).await {
+          Ok(ts) => eprintln!("[lightning-js] RGS sync complete, timestamp={ts}"),
+          Err(e) => eprintln!("[lightning-js] RGS sync failed: {e}"),
+        }
+      });
+    }
+
+    // Sync wallets
+    if let Err(e) = self.node.sync_wallets() {
+      let _ = self.node.stop();
       return Err(napi::Error::new(
         Status::GenericFailure,
-        "unable to pay lnurl without outbound capacity".to_string(),
+        format!("failed to sync wallets: {e}"),
       ));
     }
 
-    if available_balance_msat < amount_msat_u64 {
-      if let Err(err) = self.node.stop() {
-        eprintln!(
-          "[lightning-js] Failed to stop node after insufficient lnurl outbound capacity: {err}"
-        );
-      }
+    // Wait for channels and check balance
+    wait_for_usable_channels(&self.node);
+    let available = usable_outbound_capacity_msat(&self.node);
+    eprintln!("[lightning-js] available outbound capacity: {available}msat");
+
+    let required = target.amount_msat();
+    if available < required {
+      let _ = self.node.stop();
       return Err(napi::Error::new(
         Status::GenericFailure,
         format!(
-          "insufficient outbound capacity to pay lnurl: required {}msat, available {}msat",
-          amount_msat_u64, available_balance_msat,
+          "insufficient outbound capacity: required {required}msat, available {available}msat"
         ),
       ));
     }
 
-    let payment_id = match self.node.bolt11_payment().send(&invoice, None) {
-      Ok(payment_id) => payment_id,
-      Err(error) => {
-        eprintln!("[lightning-js] pay_lnurl send error: {error}");
-        if let Err(stop_error) = self.node.stop() {
-          eprintln!("[lightning-js] Failed to stop node after lnurl send error: {stop_error}");
-        }
-        return Err(napi::Error::new(
-          Status::GenericFailure,
-          format!("failed to send lnurl payment: {error}"),
-        ));
+    // Send payment
+    let payment_id = match &target {
+      PaymentTarget::Bolt11(invoice, amount) => {
+        eprintln!(
+          "[lightning-js] sending BOLT11 payment_hash={} amount={}msat",
+          invoice.payment_hash(),
+          amount
+        );
+        self
+          .node
+          .bolt11_payment()
+          .send_using_amount(invoice, *amount, None)
       }
-    };
+      PaymentTarget::Bolt12(offer, amount) => {
+        eprintln!("[lightning-js] sending BOLT12 offer_id={}", offer.id());
+        self.node.bolt12_payment().send_using_amount(
+          offer,
+          *amount,
+          None,
+          Some("A payment by MoneyDevKit".to_string()),
+          None,
+        )
+      }
+    }
+    .map_err(|e| {
+      let _ = self.node.stop();
+      napi::Error::new(
+        Status::GenericFailure,
+        format!("failed to send payment: {e}"),
+      )
+    })?;
+
     eprintln!(
-      "[lightning-js] pay_lnurl send ok payment_id={}",
+      "[lightning-js] payment sent, id={}",
       bytes_to_hex(&payment_id.0)
     );
 
-    if let Some(wait_secs) = wait_for_payment_secs {
-      eprintln!("[lightning-js] pay_lnurl waiting for payment outcome wait_secs={wait_secs}");
-      let wait_result = self.wait_for_payment_outcome(&payment_id, wait_secs);
-
-      if let Err(err) = self.node.stop() {
-        eprintln!("[lightning-js] Failed to stop node after lnurl payment wait: {err}");
-      }
-
-      wait_result?;
-    } else if let Err(err) = self.node.stop() {
-      eprintln!("[lightning-js] Failed to stop node after successful lnurl payment: {err}");
-    }
-
-    eprintln!(
-      "[lightning-js] pay_lnurl returning payment_id={}",
-      bytes_to_hex(&payment_id.0)
-    );
-    Ok(bytes_to_hex(&payment_id.0))
-  }
-
-  #[napi]
-  pub fn pay_bolt_11(&self, bolt11_invoice: String) -> napi::Result<String> {
-    let invoice = Bolt11Invoice::from_str(&bolt11_invoice).map_err(|error| {
-      napi::Error::new(
-        Status::InvalidArg,
-        format!("failed to parse bolt11 invoice: {error}"),
-      )
-    })?;
-
-    let amount_msat = invoice.amount_milli_satoshis().ok_or_else(|| {
-      napi::Error::new(
-        Status::InvalidArg,
-        "bolt11 invoice is missing an amount and cannot be paid".to_string(),
-      )
-    })?;
-
-    self.node.start().map_err(|error| {
-      napi::Error::new(
-        Status::GenericFailure,
-        format!("failed to start node prior to paying bolt11 invoice: {error}"),
-      )
-    })?;
-
-    wait_for_usable_channels(&self.node);
-    let available_balance_msat = usable_outbound_capacity_msat(&self.node);
-    eprintln!("[lightning-js] pay_bolt11 available_balance_msat={available_balance_msat}");
-
-    if available_balance_msat == 0 {
-      if let Err(err) = self.node.stop() {
-        eprintln!(
-          "[lightning-js] Failed to stop node after checking bolt11 outbound capacity: {err}"
-        );
-      }
-      return Err(napi::Error::new(
-        Status::GenericFailure,
-        "unable to pay bolt11 invoice without outbound capacity".to_string(),
-      ));
-    }
-
-    if available_balance_msat < amount_msat {
-      if let Err(err) = self.node.stop() {
-        eprintln!(
-          "[lightning-js] Failed to stop node after insufficient bolt11 outbound capacity: {err}"
-        );
-      }
-      return Err(napi::Error::new(
-        Status::GenericFailure,
-        format!(
-          "insufficient outbound capacity to pay bolt11 invoice: required {}msat, available {}msat",
-          amount_msat, available_balance_msat,
-        ),
-      ));
-    }
-
-    let payment_id = match self.node.bolt11_payment().send(&invoice, None) {
-      Ok(payment_id) => payment_id,
-      Err(error) => {
-        if let Err(stop_error) = self.node.stop() {
-          eprintln!(
-            "[lightning-js] Failed to stop node after bolt11 payment send error: {stop_error}"
-          );
-        }
-        return Err(napi::Error::new(
-          Status::GenericFailure,
-          format!("failed to send bolt11 payment: {error}"),
-        ));
-      }
-    };
-
-    if let Err(err) = self.node.stop() {
-      eprintln!("[lightning-js] Failed to stop node after successful bolt11 payment: {err}");
-    }
-
-    Ok(bytes_to_hex(&payment_id.0))
-  }
-
-  #[napi]
-  pub fn pay_bolt12_offer(
-    &self,
-    bolt12_offer_string: String,
-    amount_msat: i64,
-    wait_for_payment_secs: Option<i64>,
-  ) -> napi::Result<String> {
-    eprintln!(
-      "[lightning-js] pay_bolt12_offer called amount_msat={} wait_for_payment_secs={:?}",
-      amount_msat, wait_for_payment_secs
-    );
-    eprintln!(
-      "[lightning-js] pay_bolt12_offer bolt12_offer={}",
-      bolt12_offer_string
-    );
-
-    if amount_msat <= 0 {
-      return Err(napi::Error::new(
-        Status::InvalidArg,
-        "amount must be greater than zero".to_string(),
-      ));
-    }
-
-    let amount_msat_u64 = u64::try_from(amount_msat).map_err(|_| {
-      napi::Error::new(
-        Status::InvalidArg,
-        "amount must be representable as an unsigned 64-bit value".to_string(),
-      )
-    })?;
-
-    let wait_for_payment_secs = wait_for_payment_secs.unwrap_or(0);
-    let wait_for_payment_secs = if wait_for_payment_secs > 0 {
-      Some(wait_for_payment_secs as u64)
+    // Wait for outcome if requested
+    let result = if let Some(secs) = wait_secs {
+      self.wait_for_payment_outcome(&payment_id, secs)
     } else {
-      None
+      Ok(())
     };
-    eprintln!(
-      "[lightning-js] pay_bolt12_offer wait_for_payment_secs_normalized={wait_for_payment_secs:?}"
-    );
+    let _ = self.node.stop();
+    result?;
 
-    let bolt12_offer = Offer::from_str(&bolt12_offer_string)
-      .map_err(|_| napi::Error::new(Status::InvalidArg, "invalid bolt12 offer".to_string()))?;
-
-    eprintln!(
-      "[lightning-js] pay_bolt12_offer parsed offer: id={} issuer_pubkey={:?} description={:?} amount={:?}",
-      bolt12_offer.id(),
-      bolt12_offer.issuer_signing_pubkey(),
-      bolt12_offer.description(),
-      bolt12_offer.amount()
-    );
-
-    eprintln!("[lightning-js] pay_bolt12_offer starting node");
-    self.node.start().map_err(|error| {
-      napi::Error::new(
-        Status::GenericFailure,
-        format!("failed to start node prior to paying offer: {error}"),
-      )
-    })?;
-
-    // Full RGS sync to get node announcements (addresses/features) needed for BOLT12
-    eprintln!("[lightning-js] pay_bolt12_offer doing full RGS sync");
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime for RGS sync");
-    rt.block_on(async {
-      match self.node.sync_rgs(true).await {
-        Ok(ts) => eprintln!(
-          "[lightning-js] pay_bolt12_offer RGS sync complete, timestamp={}",
-          ts
-        ),
-        Err(e) => eprintln!("[lightning-js] pay_bolt12_offer RGS sync failed: {}", e),
-      }
-    });
-
-    eprintln!("[lightning-js] pay_bolt12_offer syncing wallets");
-    if let Err(err) = self.node.sync_wallets() {
-      eprintln!("[lightning-js] Failed to sync wallets: {err}");
-      panic!("failed to sync wallets: {err}");
-    }
-    eprintln!("[lightning-js] pay_bolt12_offer wallet sync complete");
-
-    wait_for_usable_channels(&self.node);
-    let available_balance_msat = usable_outbound_capacity_msat(&self.node);
-
-    eprintln!(
-      "[lightning-js] pay_bolt12_offer available_balance_msat={}",
-      available_balance_msat
-    );
-
-    if available_balance_msat == 0 {
-      if let Err(err) = self.node.stop() {
-        eprintln!(
-          "[lightning-js] Failed to stop node after checking bolt12 outbound capacity: {err}"
-        );
-      }
-      return Err(napi::Error::new(
-        Status::GenericFailure,
-        "unable to pay bolt12 offer without outbound capacity".to_string(),
-      ));
-    }
-
-    let amount_to_send_msat = match bolt12_offer.amount() {
-      Some(Amount::Bitcoin { amount_msats }) => amount_msats,
-      Some(_) => {
-        if let Err(err) = self.node.stop() {
-          eprintln!("[lightning-js] Failed to stop node after unsupported bolt12 currency: {err}");
-        }
-        return Err(napi::Error::new(
-          Status::GenericFailure,
-          "unsupported currency in bolt12 offer".to_string(),
-        ));
-      }
-      None => amount_msat_u64,
-    };
-
-    eprintln!(
-      "[lightning-js] pay_bolt12_offer amount_to_send_msat={}",
-      amount_to_send_msat
-    );
-
-    if amount_to_send_msat == 0 {
-      if let Err(err) = self.node.stop() {
-        eprintln!("[lightning-js] Failed to stop node after zero-amount bolt12 offer: {err}");
-      }
-      return Err(napi::Error::new(
-        Status::GenericFailure,
-        "bolt12 offer amount resolves to zero".to_string(),
-      ));
-    }
-
-    if available_balance_msat < amount_to_send_msat {
-      if let Err(err) = self.node.stop() {
-        eprintln!("[lightning-js] Failed to stop node after insufficient outbound capacity: {err}");
-      }
-      return Err(napi::Error::new(
-        Status::GenericFailure,
-        format!(
-          "insufficient outbound capacity to pay offer: required {}msat, available {}msat",
-          amount_to_send_msat, available_balance_msat,
-        ),
-      ));
-    }
-
-    eprintln!(
-      "[lightning-js] pay_bolt12_offer sending payment: offer_id={} amount_msat={}",
-      bolt12_offer.id(),
-      amount_to_send_msat
-    );
-
-    let payment_id = match self.node.bolt12_payment().send_using_amount(
-      &bolt12_offer,
-      amount_to_send_msat,
-      None,
-      Some("A payment by MoneyDevKit".to_string()),
-      None,
-    ) {
-      Ok(payment_id) => payment_id,
-      Err(error) => {
-        eprintln!("[lightning-js] pay_bolt12_offer send error: {error}");
-        if let Err(stop_error) = self.node.stop() {
-          eprintln!("[lightning-js] Failed to stop node after bolt12 send error: {stop_error}");
-        }
-        return Err(napi::Error::new(
-          Status::GenericFailure,
-          format!("failed to send bolt12 offer payment: {error}"),
-        ));
-      }
-    };
-    eprintln!(
-      "[lightning-js] pay_bolt12_offer send ok payment_id={}",
-      bytes_to_hex(&payment_id.0)
-    );
-
-    if let Some(wait_secs) = wait_for_payment_secs {
-      eprintln!(
-        "[lightning-js] pay_bolt12_offer waiting for payment outcome wait_secs={wait_secs}"
-      );
-      let wait_result = self.wait_for_payment_outcome(&payment_id, wait_secs);
-
-      if let Err(err) = self.node.stop() {
-        eprintln!("[lightning-js] Failed to stop node after bolt12 payment wait: {err}");
-      }
-
-      wait_result?;
-    } else if let Err(err) = self.node.stop() {
-      eprintln!("[lightning-js] Failed to stop node after successful bolt12 payment: {err}");
-    }
-
-    eprintln!(
-      "[lightning-js] pay_bolt12_offer returning payment_id={}",
-      bytes_to_hex(&payment_id.0)
-    );
     Ok(bytes_to_hex(&payment_id.0))
   }
 }
@@ -1365,99 +1171,14 @@ fn u64_to_i64(value: u64) -> i64 {
   i64::try_from(value).unwrap_or(i64::MAX)
 }
 
-#[derive(Debug)]
-enum LnurlPayError {
-  RuntimeInit(String),
-  Parse(ParseError),
-  Finalization(&'static str),
-  MissingInvoice,
-  InvoiceParse(String),
-  AmountMismatch {
-    invoice_msat: u64,
-    requested_msat: u64,
-  },
-}
-
-impl fmt::Display for LnurlPayError {
-  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    match self {
-      Self::RuntimeInit(err) => write!(f, "failed to initialize async runtime for lnurl: {err}"),
-      Self::Parse(err) => write!(f, "failed to parse lnurl instructions: {err:?}"),
-      Self::Finalization(err) => write!(f, "failed to finalize lnurl amount: {err}"),
-      Self::MissingInvoice => write!(
-        f,
-        "payment instructions did not resolve to a lightning invoice"
-      ),
-      Self::InvoiceParse(err) => write!(f, "failed to parse resolved lightning invoice: {err}"),
-      Self::AmountMismatch {
-        invoice_msat,
-        requested_msat,
-      } => write!(
-        f,
-        "invoice amount ({invoice_msat}msat) does not match requested amount ({requested_msat}msat)"
-      ),
-    }
-  }
-}
-
-impl std::error::Error for LnurlPayError {}
-
-fn lnurl_error_to_napi(err: LnurlPayError) -> napi::Error {
-  let status = match err {
-    LnurlPayError::Parse(_) | LnurlPayError::Finalization(_) => Status::InvalidArg,
-    _ => Status::GenericFailure,
-  };
-  napi::Error::new(status, err.to_string())
-}
-
-fn create_current_thread_runtime() -> Result<Runtime, LnurlPayError> {
+fn create_current_thread_runtime() -> Result<Runtime, napi::Error> {
   tokio::runtime::Builder::new_current_thread()
     .enable_all()
     .build()
-    .map_err(|error| LnurlPayError::RuntimeInit(error.to_string()))
-}
-
-fn resolve_lnurl_invoice_with_runtime<R: HrnResolver>(
-  runtime: &Runtime,
-  resolver: &R,
-  lnurl: &str,
-  requested_amount: InstructionAmount,
-  network: Network,
-) -> Result<Bolt11Invoice, LnurlPayError> {
-  let payment_instructions = runtime
-    .block_on(PaymentInstructions::parse(lnurl, network, resolver, true))
-    .map_err(LnurlPayError::Parse)?;
-
-  let fixed_instructions = match payment_instructions {
-    PaymentInstructions::FixedAmount(fixed) => fixed,
-    PaymentInstructions::ConfigurableAmount(configurable) => runtime
-      .block_on(configurable.set_amount(requested_amount, resolver))
-      .map_err(LnurlPayError::Finalization)?,
-  };
-
-  let invoice_string = fixed_instructions
-    .methods()
-    .iter()
-    .find_map(|method| match method {
-      PaymentMethod::LightningBolt11(invoice) => Some(invoice.to_string()),
-      _ => None,
+    .map_err(|error| {
+      napi::Error::new(
+        Status::GenericFailure,
+        format!("failed to initialize async runtime: {error}"),
+      )
     })
-    .ok_or(LnurlPayError::MissingInvoice)?;
-
-  let invoice = Bolt11Invoice::from_str(&invoice_string)
-    .map_err(|error| LnurlPayError::InvoiceParse(error.to_string()))?;
-
-  let invoice_amount_msat = invoice
-    .amount_milli_satoshis()
-    .ok_or(LnurlPayError::MissingInvoice)?;
-  let requested_msat = requested_amount.milli_sats();
-
-  if invoice_amount_msat != requested_msat {
-    return Err(LnurlPayError::AmountMismatch {
-      invoice_msat: invoice_amount_msat,
-      requested_msat,
-    });
-  }
-
-  Ok(invoice)
 }
