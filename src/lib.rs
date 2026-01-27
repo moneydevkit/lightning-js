@@ -242,10 +242,17 @@ pub struct ReceivedPayment {
 
 #[napi(object)]
 pub struct PaymentEvent {
-  pub event_type: String,
+  pub event_type: PaymentEventType,
   pub payment_hash: String,
   pub amount_msat: Option<i64>,
   pub reason: Option<String>,
+}
+
+#[napi]
+pub enum PaymentEventType {
+  Claimable,
+  Received,
+  Failed,
 }
 
 #[napi(object)]
@@ -363,7 +370,7 @@ impl MdkNode {
               claimable_amount_msat,
               ..
             } => Some(PaymentEvent {
-              event_type: "claimable".to_string(),
+              event_type: PaymentEventType::Claimable,
               payment_hash: bytes_to_hex(&payment_hash.0),
               amount_msat: Some(*claimable_amount_msat as i64),
               reason: None,
@@ -373,7 +380,7 @@ impl MdkNode {
               amount_msat,
               ..
             } => Some(PaymentEvent {
-              event_type: "received".to_string(),
+              event_type: PaymentEventType::Received,
               payment_hash: bytes_to_hex(&payment_hash.0),
               amount_msat: Some(*amount_msat as i64),
               reason: None,
@@ -383,7 +390,7 @@ impl MdkNode {
               reason,
               ..
             } => payment_hash.map(|h| PaymentEvent {
-              event_type: "failed".to_string(),
+              event_type: PaymentEventType::Failed,
               payment_hash: bytes_to_hex(&h.0),
               amount_msat: None,
               reason: reason.map(|r| format!("{r:?}")),
