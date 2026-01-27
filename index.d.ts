@@ -84,4 +84,22 @@ export declare class MdkNode {
   payLnurl(lnurl: string, amountMsat: number, waitForPaymentSecs?: number | undefined | null): string
   payBolt11(bolt11Invoice: string): string
   payBolt12Offer(bolt12OfferString: string, amountMsat: number, waitForPaymentSecs?: number | undefined | null): string
+  getVariableAmountJitInvoiceWithScid(
+    humanReadableScid: string,
+    description: string,
+    expirySecs: number,
+  ): PaymentMetadata
+  /**
+   * Unified payment method that auto-detects the destination type.
+   *
+   * Only supports variable-amount destinations where we set the amount:
+   * - BOLT12 offers (lno...)
+   * - LNURL (lnurl...)
+   * - Lightning addresses (user@domain)
+   * - Zero-amount BOLT11 invoices
+   *
+   * BOLT11 invoices with embedded amounts are rejected - use a variable-amount
+   * destination instead. The amountMsat parameter is always required.
+   */
+  pay(destination: string, amountMsat: number, waitForPaymentSecs?: number | undefined | null): string
 }
