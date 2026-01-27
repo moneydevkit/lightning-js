@@ -28,6 +28,12 @@ export interface ReceivedPayment {
   paymentHash: string
   amount: number
 }
+export interface PaymentEvent {
+  eventType: string
+  paymentHash: string
+  amountMsat?: number
+  reason?: string
+}
 export interface NodeChannel {
   channelId: string
   counterpartyNodeId: string
@@ -43,6 +49,21 @@ export declare class MdkNode {
   getNodeId(): string
   start(): void
   stop(): void
+  /** Start the node and sync wallets. Call once before polling for events. */
+  startReceiving(): void
+  /**
+   * Get the next payment event without ACKing it.
+   * Returns None if no events are available.
+   * Call ack_event() after successfully handling the event.
+   */
+  nextEvent(): PaymentEvent | null
+  /**
+   * ACK the current event after successfully handling it.
+   * Must be called after next_event() returns an event, before calling next_event() again.
+   */
+  ackEvent(): void
+  /** Stop the node. Call when done polling. */
+  stopReceiving(): void
   syncWallets(): void
   getBalance(): number
   listChannels(): Array<NodeChannel>
