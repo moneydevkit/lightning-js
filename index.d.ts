@@ -117,22 +117,30 @@ export declare class MdkNode {
    * - Lightning addresses (user@domain)
    * - Zero-amount BOLT11 invoices
    *
-   * BOLT11 invoices with embedded amounts are rejected - use a variable-amount
-   * destination instead. The amount_msat parameter is always required.
+   * For fixed-amount BOLT11 invoices, amount_msat can be omitted (the invoice amount is used).
+   * For variable-amount destinations, amount_msat is required.
    */
-  pay(destination: string, amountMsat: number, waitForPaymentSecs?: number | undefined | null): string
+  pay(
+    destination: string,
+    amountMsat?: number | undefined | null,
+    waitForPaymentSecs?: number | undefined | null,
+  ): string
   /**
    * Unified payment method that auto-detects the destination type.
    * Use this when the node is already running via start_receiving().
    *
-   * Only supports variable-amount destinations where we set the amount:
+   * Supports all destination types:
+   * - BOLT11 invoices (fixed or variable amount)
    * - BOLT12 offers (lno...)
    * - LNURL (lnurl...)
    * - Lightning addresses (user@domain)
-   * - Zero-amount BOLT11 invoices
    *
-   * BOLT11 invoices with embedded amounts are rejected - use a variable-amount
-   * destination instead. The amount_msat parameter is always required.
+   * For fixed-amount BOLT11 invoices, amount_msat can be omitted (the invoice amount is used).
+   * For variable-amount destinations, amount_msat is required.
    */
-  payWhileRunning(destination: string, amountMsat: number, waitForPaymentSecs?: number | undefined | null): string
+  payWhileRunning(
+    destination: string,
+    amountMsat?: number | undefined | null,
+    waitForPaymentSecs?: number | undefined | null,
+  ): string
 }
