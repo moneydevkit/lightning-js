@@ -499,6 +499,21 @@ impl MdkNode {
     u64_to_i64(total_outbound_msat / 1_000)
   }
 
+  /// Get balance without starting/stopping the node.
+  /// Use this when the node is already running via start_receiving().
+  #[napi]
+  pub fn get_balance_while_running(&self) -> i64 {
+    let total_outbound_msat = self
+      .node
+      .list_channels()
+      .into_iter()
+      .fold(0u64, |acc, channel| {
+        acc.saturating_add(channel.outbound_capacity_msat)
+      });
+
+    u64_to_i64(total_outbound_msat / 1_000)
+  }
+
   #[napi]
   pub fn list_channels(&self) -> Vec<NodeChannel> {
     self
@@ -716,6 +731,51 @@ impl MdkNode {
     }
 
     invoice_to_payment_metadata(invoice)
+  }
+
+  /// Get invoice without starting/stopping the node.
+  /// Use this when the node is already running via start_receiving().
+  #[napi]
+  pub fn get_invoice_while_running(
+    &self,
+    amount: i64,
+    description: String,
+    expiry_secs: i64,
+  ) -> napi::Result<PaymentMetadata> {
+    let bolt11_invoice_description =
+      Bolt11InvoiceDescription::Direct(Description::new(description).unwrap());
+
+    let invoice = self
+      .node
+      .bolt11_payment()
+      .receive_via_lsps4_jit_channel(
+        Some(amount as u64),
+        &bolt11_invoice_description,
+        expiry_secs as u32,
+      )
+      .map_err(|e| napi::Error::from_reason(format!("Failed to get invoice: {e}")))?;
+
+    Ok(invoice_to_payment_metadata(invoice))
+  }
+
+  /// Get variable amount invoice without starting/stopping the node.
+  /// Use this when the node is already running via start_receiving().
+  #[napi]
+  pub fn get_variable_amount_jit_invoice_while_running(
+    &self,
+    description: String,
+    expiry_secs: i64,
+  ) -> napi::Result<PaymentMetadata> {
+    let bolt11_invoice_description =
+      Bolt11InvoiceDescription::Direct(Description::new(description).unwrap());
+
+    let invoice = self
+      .node
+      .bolt11_payment()
+      .receive_via_lsps4_jit_channel(None, &bolt11_invoice_description, expiry_secs as u32)
+      .map_err(|e| napi::Error::from_reason(format!("Failed to get invoice: {e}")))?;
+
+    Ok(invoice_to_payment_metadata(invoice))
   }
 
   #[napi]
