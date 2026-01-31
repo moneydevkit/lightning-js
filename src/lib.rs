@@ -493,6 +493,24 @@ impl MdkNode {
       panic!("failed to sync wallets: {err}");
     }
 
+    let balance = self.get_balance_impl();
+
+    if let Err(err) = self.node.stop() {
+      eprintln!("[lightning-js] Failed to stop node via stop() in get_balance: {err}");
+      panic!("failed to stop node: {err}");
+    }
+
+    balance
+  }
+
+  /// Get balance without starting/stopping the node.
+  /// Use this when the node is already running via start_receiving().
+  #[napi]
+  pub fn get_balance_while_running(&self) -> i64 {
+    self.get_balance_impl()
+  }
+
+  fn get_balance_impl(&self) -> i64 {
     let total_outbound_msat = self
       .node
       .list_channels()
@@ -500,11 +518,6 @@ impl MdkNode {
       .fold(0u64, |acc, channel| {
         acc.saturating_add(channel.outbound_capacity_msat)
       });
-
-    if let Err(err) = self.node.stop() {
-      eprintln!("[lightning-js] Failed to stop node via stop() in get_balance: {err}");
-      panic!("failed to stop node: {err}");
-    }
 
     u64_to_i64(total_outbound_msat / 1_000)
   }
@@ -700,8 +713,6 @@ impl MdkNode {
 
   #[napi]
   pub fn get_invoice(&self, amount: i64, description: String, expiry_secs: i64) -> PaymentMetadata {
-    let bolt11_invoice_description =
-      Bolt11InvoiceDescription::Direct(Description::new(description).unwrap());
     if let Err(err) = self.node.start() {
       eprintln!("[lightning-js] Failed to start node for get_invoice: {err}");
       panic!("failed to start node for get_invoice: {err}");
@@ -711,21 +722,58 @@ impl MdkNode {
       panic!("failed to sync wallets: {err}");
     }
 
-    let invoice = self
-      .node
-      .bolt11_payment()
-      .receive_via_lsps4_jit_channel(
-        Some(amount as u64),
-        &bolt11_invoice_description,
-        expiry_secs as u32,
-      )
-      .unwrap();
+    let result = self.get_invoice_impl(Some(amount), description, expiry_secs);
 
     if let Err(err) = self.node.stop() {
       eprintln!("[lightning-js] Failed to stop node after get_invoice: {err}");
     }
 
-    invoice_to_payment_metadata(invoice)
+    result.unwrap()
+  }
+
+  /// Get invoice without starting/stopping the node.
+  /// Use this when the node is already running via start_receiving().
+  #[napi]
+  pub fn get_invoice_while_running(
+    &self,
+    amount: i64,
+    description: String,
+    expiry_secs: i64,
+  ) -> napi::Result<PaymentMetadata> {
+    self.get_invoice_impl(Some(amount), description, expiry_secs)
+  }
+
+  /// Get variable amount invoice without starting/stopping the node.
+  /// Use this when the node is already running via start_receiving().
+  #[napi]
+  pub fn get_variable_amount_jit_invoice_while_running(
+    &self,
+    description: String,
+    expiry_secs: i64,
+  ) -> napi::Result<PaymentMetadata> {
+    self.get_invoice_impl(None, description, expiry_secs)
+  }
+
+  fn get_invoice_impl(
+    &self,
+    amount: Option<i64>,
+    description: String,
+    expiry_secs: i64,
+  ) -> napi::Result<PaymentMetadata> {
+    let bolt11_invoice_description =
+      Bolt11InvoiceDescription::Direct(Description::new(description).unwrap());
+
+    let invoice = self
+      .node
+      .bolt11_payment()
+      .receive_via_lsps4_jit_channel(
+        amount.map(|a| a as u64),
+        &bolt11_invoice_description,
+        expiry_secs as u32,
+      )
+      .map_err(|e| napi::Error::from_reason(format!("Failed to get invoice: {e}")))?;
+
+    Ok(invoice_to_payment_metadata(invoice))
   }
 
   #[napi]
@@ -761,15 +809,8 @@ impl MdkNode {
     description: String,
     expiry_secs: i64,
   ) -> PaymentMetadata {
-    let bolt11_invoice_description =
-      Bolt11InvoiceDescription::Direct(Description::new(description).unwrap());
-    let bolt11 = self
-      .node
-      .bolt11_payment()
-      .receive_via_lsps4_jit_channel(None, &bolt11_invoice_description, expiry_secs as u32)
-      .unwrap();
-
-    invoice_to_payment_metadata(bolt11)
+    // Note: this method doesn't start/stop the node (legacy behavior)
+    self.get_invoice_impl(None, description, expiry_secs).unwrap()
   }
 
   #[napi]
@@ -901,6 +942,64 @@ impl MdkNode {
       destination, amount_msat, wait_for_payment_secs
     );
 
+    let (payment_target, wait_secs) =
+      self.resolve_payment_target(destination, amount_msat, wait_for_payment_secs)?;
+
+    // Start node
+    self.node.start().map_err(|e| {
+      napi::Error::new(Status::GenericFailure, format!("failed to start node: {e}"))
+    })?;
+
+    // Sync wallets
+    if let Err(e) = self.node.sync_wallets() {
+      let _ = self.node.stop();
+      return Err(napi::Error::new(
+        Status::GenericFailure,
+        format!("failed to sync wallets: {e}"),
+      ));
+    }
+
+    let result = self.execute_payment_impl(&payment_target, wait_secs);
+    let _ = self.node.stop();
+    result
+  }
+
+  /// Unified payment method that auto-detects the destination type.
+  /// Use this when the node is already running via start_receiving().
+  ///
+  /// Only supports variable-amount destinations where we set the amount:
+  /// - BOLT12 offers (lno...)
+  /// - LNURL (lnurl...)
+  /// - Lightning addresses (user@domain)
+  /// - Zero-amount BOLT11 invoices
+  ///
+  /// BOLT11 invoices with embedded amounts are rejected - use a variable-amount
+  /// destination instead. The amount_msat parameter is always required.
+  #[napi]
+  pub fn pay_while_running(
+    &self,
+    destination: String,
+    amount_msat: i64,
+    wait_for_payment_secs: Option<i64>,
+  ) -> napi::Result<String> {
+    eprintln!(
+      "[lightning-js] pay_while_running called destination={} amount_msat={} wait_for_payment_secs={:?}",
+      destination, amount_msat, wait_for_payment_secs
+    );
+
+    let (payment_target, wait_secs) =
+      self.resolve_payment_target(destination, amount_msat, wait_for_payment_secs)?;
+
+    self.execute_payment_impl(&payment_target, wait_secs)
+  }
+
+  /// Parse destination and resolve to payment target
+  fn resolve_payment_target(
+    &self,
+    destination: String,
+    amount_msat: i64,
+    wait_for_payment_secs: Option<i64>,
+  ) -> napi::Result<(PaymentTarget, Option<u64>)> {
     // Validate amount
     let amount_msat = u64::try_from(amount_msat)
       .ok()
@@ -915,7 +1014,7 @@ impl MdkNode {
     let resolver = HTTPHrnResolver::new();
     let runtime = create_current_thread_runtime()?;
 
-    eprintln!("[lightning-js] pay parsing destination");
+    eprintln!("[lightning-js] parsing destination");
     let payment_instructions = runtime
       .block_on(PaymentInstructions::parse(
         &destination,
@@ -955,10 +1054,7 @@ impl MdkNode {
 
     // Find a supported payment method
     let methods = fixed.methods();
-    eprintln!(
-      "[lightning-js] pay resolved {} payment method(s)",
-      methods.len()
-    );
+    eprintln!("[lightning-js] resolved {} payment method(s)", methods.len());
 
     let payment_target = methods
       .iter()
@@ -989,17 +1085,15 @@ impl MdkNode {
       }
     }
 
-    // Execute payment
-    self.execute_payment(payment_target, wait_secs)
+    Ok((payment_target, wait_secs))
   }
 
-  /// Execute a payment after destination has been resolved
-  fn execute_payment(&self, target: PaymentTarget, wait_secs: Option<u64>) -> napi::Result<String> {
-    // Start node
-    self.node.start().map_err(|e| {
-      napi::Error::new(Status::GenericFailure, format!("failed to start node: {e}"))
-    })?;
-
+  /// Core payment execution logic (no start/stop)
+  fn execute_payment_impl(
+    &self,
+    target: &PaymentTarget,
+    wait_secs: Option<u64>,
+  ) -> napi::Result<String> {
     // BOLT12 requires full RGS sync for onion message routing
     if matches!(target, PaymentTarget::Bolt12(_, _)) {
       eprintln!("[lightning-js] doing full RGS sync for BOLT12");
@@ -1012,15 +1106,6 @@ impl MdkNode {
       });
     }
 
-    // Sync wallets
-    if let Err(e) = self.node.sync_wallets() {
-      let _ = self.node.stop();
-      return Err(napi::Error::new(
-        Status::GenericFailure,
-        format!("failed to sync wallets: {e}"),
-      ));
-    }
-
     // Wait for channels and check balance
     wait_for_usable_channels(&self.node);
     let available = usable_outbound_capacity_msat(&self.node);
@@ -1028,7 +1113,6 @@ impl MdkNode {
 
     let required = target.amount_msat();
     if available < required {
-      let _ = self.node.stop();
       return Err(napi::Error::new(
         Status::GenericFailure,
         format!(
@@ -1038,7 +1122,7 @@ impl MdkNode {
     }
 
     // Send payment
-    let payment_id = match &target {
+    let payment_id = match target {
       PaymentTarget::Bolt11(invoice, amount) => {
         eprintln!(
           "[lightning-js] sending BOLT11 payment_hash={} amount={}msat",
@@ -1062,7 +1146,6 @@ impl MdkNode {
       }
     }
     .map_err(|e| {
-      let _ = self.node.stop();
       napi::Error::new(
         Status::GenericFailure,
         format!("failed to send payment: {e}"),
@@ -1075,13 +1158,9 @@ impl MdkNode {
     );
 
     // Wait for outcome if requested
-    let result = if let Some(secs) = wait_secs {
-      self.wait_for_payment_outcome(&payment_id, secs)
-    } else {
-      Ok(())
-    };
-    let _ = self.node.stop();
-    result?;
+    if let Some(secs) = wait_secs {
+      self.wait_for_payment_outcome(&payment_id, secs)?;
+    }
 
     Ok(bytes_to_hex(&payment_id.0))
   }
