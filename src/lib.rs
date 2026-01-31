@@ -930,17 +930,17 @@ impl MdkNode {
   /// - Lightning addresses (user@domain)
   /// - Zero-amount BOLT11 invoices
   ///
-  /// BOLT11 invoices with embedded amounts are rejected - use a variable-amount
-  /// destination instead. The amount_msat parameter is always required.
+  /// For fixed-amount BOLT11 invoices, amount_msat can be omitted (the invoice amount is used).
+  /// For variable-amount destinations, amount_msat is required.
   #[napi]
   pub fn pay(
     &self,
     destination: String,
-    amount_msat: i64,
+    amount_msat: Option<i64>,
     wait_for_payment_secs: Option<i64>,
   ) -> napi::Result<String> {
     eprintln!(
-      "[lightning-js] pay called destination={} amount_msat={} wait_for_payment_secs={:?}",
+      "[lightning-js] pay called destination={} amount_msat={:?} wait_for_payment_secs={:?}",
       destination, amount_msat, wait_for_payment_secs
     );
 
@@ -969,23 +969,23 @@ impl MdkNode {
   /// Unified payment method that auto-detects the destination type.
   /// Use this when the node is already running via start_receiving().
   ///
-  /// Only supports variable-amount destinations where we set the amount:
+  /// Supports all destination types:
+  /// - BOLT11 invoices (fixed or variable amount)
   /// - BOLT12 offers (lno...)
   /// - LNURL (lnurl...)
   /// - Lightning addresses (user@domain)
-  /// - Zero-amount BOLT11 invoices
   ///
-  /// BOLT11 invoices with embedded amounts are rejected - use a variable-amount
-  /// destination instead. The amount_msat parameter is always required.
+  /// For fixed-amount BOLT11 invoices, amount_msat can be omitted (the invoice amount is used).
+  /// For variable-amount destinations, amount_msat is required.
   #[napi]
   pub fn pay_while_running(
     &self,
     destination: String,
-    amount_msat: i64,
+    amount_msat: Option<i64>,
     wait_for_payment_secs: Option<i64>,
   ) -> napi::Result<String> {
     eprintln!(
-      "[lightning-js] pay_while_running called destination={} amount_msat={} wait_for_payment_secs={:?}",
+      "[lightning-js] pay_while_running called destination={} amount_msat={:?} wait_for_payment_secs={:?}",
       destination, amount_msat, wait_for_payment_secs
     );
 
@@ -999,17 +999,9 @@ impl MdkNode {
   fn resolve_payment_target(
     &self,
     destination: String,
-    amount_msat: i64,
+    amount_msat: Option<i64>,
     wait_for_payment_secs: Option<i64>,
   ) -> napi::Result<(PaymentTarget, Option<u64>)> {
-    // Validate amount
-    let amount_msat = u64::try_from(amount_msat)
-      .ok()
-      .filter(|&a| a > 0)
-      .ok_or_else(|| {
-        napi::Error::new(Status::InvalidArg, "amount_msat must be greater than zero")
-      })?;
-
     let wait_secs = wait_for_payment_secs.and_then(|s| if s > 0 { Some(s as u64) } else { None });
 
     // Parse destination and resolve to payment method
@@ -1031,22 +1023,73 @@ impl MdkNode {
         )
       })?;
 
-    // Only allow configurable amount destinations
-    let configurable = match payment_instructions {
-      PaymentInstructions::FixedAmount(_) => {
-        return Err(napi::Error::new(
-          Status::InvalidArg,
-          "destination has a pre-set amount; only variable-amount destinations are supported",
-        ));
+    // Get payment methods and amount based on instruction type
+    let (methods, final_amount_msat): (&[PaymentMethod], u64) = match &payment_instructions {
+      PaymentInstructions::FixedAmount(fixed) => {
+        // Use the amount from the invoice
+        let invoice_amount = fixed
+          .ln_payment_amount()
+          .ok_or_else(|| {
+            napi::Error::new(Status::InvalidArg, "fixed-amount destination has no lightning amount")
+          })?
+          .milli_sats();
+        eprintln!("[lightning-js] fixed-amount destination: {}msat", invoice_amount);
+        (fixed.methods(), invoice_amount)
       }
-      PaymentInstructions::ConfigurableAmount(c) => c,
+      PaymentInstructions::ConfigurableAmount(configurable) => {
+        // Amount is required for configurable-amount destinations
+        let amount_msat = amount_msat
+          .ok_or_else(|| {
+            napi::Error::new(Status::InvalidArg, "amount_msat is required for variable-amount destinations")
+          })?;
+        let amount_msat = u64::try_from(amount_msat)
+          .ok()
+          .filter(|&a| a > 0)
+          .ok_or_else(|| {
+            napi::Error::new(Status::InvalidArg, "amount_msat must be greater than zero")
+          })?;
+
+        // Clone and call helper to handle ownership
+        return self.resolve_configurable_payment(configurable.clone(), amount_msat, wait_secs, &resolver, &runtime);
+      }
     };
 
-    // Set the amount
+    eprintln!(
+      "[lightning-js] resolved {} payment method(s)",
+      methods.len()
+    );
+
+    let payment_target = methods
+      .iter()
+      .find_map(|m| match m {
+        PaymentMethod::LightningBolt11(inv) => Bolt11Invoice::from_str(&inv.to_string())
+          .ok()
+          .map(|i| PaymentTarget::Bolt11(i, final_amount_msat)),
+        PaymentMethod::LightningBolt12(offer) => Offer::from_str(&offer.to_string())
+          .ok()
+          .map(|o| PaymentTarget::Bolt12(Box::new(o), final_amount_msat)),
+        _ => None,
+      })
+      .ok_or_else(|| {
+        napi::Error::new(Status::GenericFailure, "no supported payment method found")
+      })?;
+
+    Ok((payment_target, wait_secs))
+  }
+
+  /// Helper for configurable amount payments (handles lifetime issues)
+  fn resolve_configurable_payment(
+    &self,
+    configurable: bitcoin_payment_instructions::ConfigurableAmountPaymentInstructions,
+    amount_msat: u64,
+    wait_secs: Option<u64>,
+    resolver: &HTTPHrnResolver,
+    runtime: &Runtime,
+  ) -> napi::Result<(PaymentTarget, Option<u64>)> {
     let requested_amount = InstructionAmount::from_milli_sats(amount_msat)
       .map_err(|_| napi::Error::new(Status::InvalidArg, "amount exceeds maximum"))?;
     let fixed = runtime
-      .block_on(configurable.set_amount(requested_amount, &resolver))
+      .block_on(configurable.set_amount(requested_amount, resolver))
       .map_err(|err| {
         napi::Error::new(
           Status::GenericFailure,
@@ -1054,7 +1097,6 @@ impl MdkNode {
         )
       })?;
 
-    // Find a supported payment method
     let methods = fixed.methods();
     eprintln!(
       "[lightning-js] resolved {} payment method(s)",
