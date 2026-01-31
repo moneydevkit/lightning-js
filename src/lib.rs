@@ -810,7 +810,9 @@ impl MdkNode {
     expiry_secs: i64,
   ) -> PaymentMetadata {
     // Note: this method doesn't start/stop the node (legacy behavior)
-    self.get_invoice_impl(None, description, expiry_secs).unwrap()
+    self
+      .get_invoice_impl(None, description, expiry_secs)
+      .unwrap()
   }
 
   #[napi]
@@ -1054,7 +1056,10 @@ impl MdkNode {
 
     // Find a supported payment method
     let methods = fixed.methods();
-    eprintln!("[lightning-js] resolved {} payment method(s)", methods.len());
+    eprintln!(
+      "[lightning-js] resolved {} payment method(s)",
+      methods.len()
+    );
 
     let payment_target = methods
       .iter()
