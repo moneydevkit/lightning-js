@@ -1030,18 +1030,26 @@ impl MdkNode {
         let invoice_amount = fixed
           .ln_payment_amount()
           .ok_or_else(|| {
-            napi::Error::new(Status::InvalidArg, "fixed-amount destination has no lightning amount")
+            napi::Error::new(
+              Status::InvalidArg,
+              "fixed-amount destination has no lightning amount",
+            )
           })?
           .milli_sats();
-        eprintln!("[lightning-js] fixed-amount destination: {}msat", invoice_amount);
+        eprintln!(
+          "[lightning-js] fixed-amount destination: {}msat",
+          invoice_amount
+        );
         (fixed.methods(), invoice_amount)
       }
       PaymentInstructions::ConfigurableAmount(configurable) => {
         // Amount is required for configurable-amount destinations
-        let amount_msat = amount_msat
-          .ok_or_else(|| {
-            napi::Error::new(Status::InvalidArg, "amount_msat is required for variable-amount destinations")
-          })?;
+        let amount_msat = amount_msat.ok_or_else(|| {
+          napi::Error::new(
+            Status::InvalidArg,
+            "amount_msat is required for variable-amount destinations",
+          )
+        })?;
         let amount_msat = u64::try_from(amount_msat)
           .ok()
           .filter(|&a| a > 0)
@@ -1050,7 +1058,13 @@ impl MdkNode {
           })?;
 
         // Clone and call helper to handle ownership
-        return self.resolve_configurable_payment(configurable.clone(), amount_msat, wait_secs, &resolver, &runtime);
+        return self.resolve_configurable_payment(
+          configurable.clone(),
+          amount_msat,
+          wait_secs,
+          &resolver,
+          &runtime,
+        );
       }
     };
 
