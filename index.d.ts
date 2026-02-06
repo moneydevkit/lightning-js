@@ -33,6 +33,7 @@ export interface PaymentEvent {
   paymentHash: string
   amountMsat?: number
   reason?: string
+  payerNote?: string
 }
 export const enum PaymentEventType {
   Claimable = 0,
@@ -108,6 +109,21 @@ export declare class MdkNode {
     description: string,
     expirySecs: number,
   ): PaymentMetadata
+  /**
+   * Get a BOLT12 offer for receiving via LSPS4 JIT channel.
+   * Use this when the node is already running via start_receiving().
+   */
+  getBolt12OfferWhileRunning(amount: number, description: string, expirySecs?: number | undefined | null): string
+  /**
+   * Get a variable amount BOLT12 offer for receiving via LSPS4 JIT channel.
+   * Use this when the node is already running via start_receiving().
+   */
+  getVariableAmountBolt12OfferWhileRunning(description: string, expirySecs?: number | undefined | null): string
+  /**
+   * Register LSPS4 and sync gossip for BOLT12 receive.
+   * Call this on startup if you want to accept payments for existing offers.
+   */
+  setupBolt12Receive(): void
   /**
    * Unified payment method that auto-detects the destination type.
    *

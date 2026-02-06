@@ -36,6 +36,7 @@ use ldk_node::{
   lightning::{ln::msgs::SocketAddress, offers::offer::Offer, util::scid_utils},
   lightning_invoice::{Bolt11Invoice, Bolt11InvoiceDescription, Description},
   lightning_types::payment::PaymentHash,
+  payment::PaymentKind,
 };
 use tokio::runtime::Runtime;
 
@@ -256,6 +257,7 @@ pub struct PaymentEvent {
   pub payment_hash: String,
   pub amount_msat: Option<i64>,
   pub reason: Option<String>,
+  pub payer_note: Option<String>,
 }
 
 #[napi]
@@ -384,17 +386,36 @@ impl MdkNode {
               payment_hash: bytes_to_hex(&payment_hash.0),
               amount_msat: Some(*claimable_amount_msat as i64),
               reason: None,
+              payer_note: None,
             }),
             Event::PaymentReceived {
+              payment_id,
               payment_hash,
               amount_msat,
               ..
-            } => Some(PaymentEvent {
-              event_type: PaymentEventType::Received,
-              payment_hash: bytes_to_hex(&payment_hash.0),
-              amount_msat: Some(*amount_msat as i64),
-              reason: None,
-            }),
+            } => {
+              let payer_note = payment_id.and_then(|pid| {
+                self
+                  .node
+                  .payment(&pid)
+                  .and_then(|details| match details.kind {
+                    PaymentKind::Bolt12Offer { payer_note, .. } => {
+                      payer_note.map(|n| n.to_string())
+                    }
+                    PaymentKind::Bolt12Refund { payer_note, .. } => {
+                      payer_note.map(|n| n.to_string())
+                    }
+                    _ => None,
+                  })
+              });
+              Some(PaymentEvent {
+                event_type: PaymentEventType::Received,
+                payment_hash: bytes_to_hex(&payment_hash.0),
+                amount_msat: Some(*amount_msat as i64),
+                reason: None,
+                payer_note,
+              })
+            }
             Event::PaymentFailed {
               payment_hash,
               reason,
@@ -404,6 +425,7 @@ impl MdkNode {
               payment_hash: bytes_to_hex(&h.0),
               amount_msat: None,
               reason: reason.map(|r| format!("{r:?}")),
+              payer_note: None,
             }),
             _ => None,
           };
@@ -839,6 +861,65 @@ impl MdkNode {
       .unwrap();
 
     invoice_to_payment_metadata(bolt11)
+  }
+
+  /// Get a BOLT12 offer for receiving via LSPS4 JIT channel.
+  /// Use this when the node is already running via start_receiving().
+  #[napi]
+  pub fn get_bolt12_offer_while_running(
+    &self,
+    amount: i64,
+    description: String,
+    expiry_secs: Option<i64>,
+  ) -> napi::Result<String> {
+    self.setup_bolt12_receive()?;
+
+    let offer = self
+      .node
+      .bolt12_payment()
+      .receive_via_lsps4_jit_channel(
+        amount as u64,
+        &description,
+        expiry_secs.map(|s| s as u32),
+        None,
+      )
+      .map_err(|e| napi::Error::from_reason(format!("Failed to get BOLT12 offer: {e}")))?;
+
+    Ok(offer.to_string())
+  }
+
+  /// Get a variable amount BOLT12 offer for receiving via LSPS4 JIT channel.
+  /// Use this when the node is already running via start_receiving().
+  #[napi]
+  pub fn get_variable_amount_bolt12_offer_while_running(
+    &self,
+    description: String,
+    expiry_secs: Option<i64>,
+  ) -> napi::Result<String> {
+    self.setup_bolt12_receive()?;
+
+    let offer = self
+      .node
+      .bolt12_payment()
+      .receive_variable_amount_via_lsps4_jit_channel(&description, expiry_secs.map(|s| s as u32))
+      .map_err(|e| napi::Error::from_reason(format!("Failed to get BOLT12 offer: {e}")))?;
+
+    Ok(offer.to_string())
+  }
+
+  /// Register LSPS4 and sync gossip for BOLT12 receive.
+  /// Call this on startup if you want to accept payments for existing offers.
+  #[napi]
+  pub fn setup_bolt12_receive(&self) -> napi::Result<()> {
+    eprintln!("[lightning-js] doing full RGS sync for BOLT12 receive");
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
+    rt.block_on(async {
+      match self.node.sync_rgs(true).await {
+        Ok(ts) => eprintln!("[lightning-js] RGS sync complete, timestamp={ts}"),
+        Err(e) => eprintln!("[lightning-js] RGS sync failed: {e}"),
+      }
+    });
+    Ok(())
   }
 
   fn wait_for_payment_outcome(
@@ -1321,4 +1402,30 @@ fn create_current_thread_runtime() -> Result<Runtime, napi::Error> {
         format!("failed to initialize async runtime: {error}"),
       )
     })
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn test_decode_offer() {
+    let offer_str = "lno1pg9hgetnwssxymmvwscnyrsydxz7edcsl5q4jqqwzsyqqpauqqqs857hymjmyqkxs9aer4p4knpf2yrfgu6ce8jmtt2t6s8mexrpv2rlqgp3czm5el2szpvddan9fu2lhaszjzdnvn7g4ccw73m6q2ddm4a3y2cqw3hxk0avesm4hehx65eqmdq6s4ltyf4hehtscy6qwggpmsqa850qg4zed9us3ltr0whhwk8z9yfjtvqy2hr7qycl2pjkxaftdswzeymc5f9xftpyw99u7fyga84hx00w5g08nfamqhjq7vvfssk9wraa6t84gqanep8l6k2k6rwe77jer3y7n2rf489s88rumamsnep3dxq54j30ckq76qxjc0kmxt2zwgc7ususamdx9y2kqp688wcskfdwgh5069520kznhytymke3dlf4zgjzj7lfzkv076u3y529y098ddcuyl65g08a66sj58cucrk5g6r0gcvj8e5nxexc2wqvhnhe500qaxwlyyl9lsrdzz05ff4l045kj2erj3m7zdyj6kuaqn3na0e652tk678qyxjyzdejrgz0luptugx9x93pqgx3jqpp9ulftdch4spy8avvw5p9mdvga4aqnqa2032rkrgh7x6xc";
+
+    let offer = Offer::from_str(offer_str).expect("Failed to parse offer");
+
+    println!("Offer parsed successfully!");
+    println!("  - Signing pubkey: {:?}", offer.issuer_signing_pubkey());
+    println!("  - Amount: {:?}", offer.amount());
+    println!("  - Number of paths: {}", offer.paths().len());
+
+    for (i, path) in offer.paths().iter().enumerate() {
+      println!("  - Path {}: {:?}", i, path);
+    }
+
+    assert!(
+      offer.paths().len() > 0,
+      "Offer should have at least one path!"
+    );
+  }
 }
