@@ -1,6 +1,6 @@
 {
   "name": "@moneydevkit/lightning-js-freebsd-x64",
-  "version": "0.1.68",
+  "version": "0.1.69",
   "os": [
     "freebsd"
   ],
