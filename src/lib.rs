@@ -27,12 +27,14 @@ use ldk_node::{
   bip39::Mnemonic,
   bitcoin::{
     Network,
+    bip32::Xpriv,
     hashes::{Hash, sha256},
     secp256k1::PublicKey,
   },
   config::Config,
   generate_entropy_mnemonic,
   lightning::ln::channelmanager::PaymentId,
+  lightning::sign::{KeysManager as LdkKeysManager, NodeSigner, Recipient},
   lightning::{ln::msgs::SocketAddress, offers::offer::Offer, util::scid_utils},
   lightning_invoice::{Bolt11Invoice, Bolt11InvoiceDescription, Description},
   lightning_types::payment::PaymentHash,
@@ -218,6 +220,35 @@ pub fn set_log_listener(
 #[napi]
 pub fn generate_mnemonic() -> String {
   generate_entropy_mnemonic(None).to_string()
+}
+
+/// Derive the node public key from a mnemonic and network without building the full node.
+/// This replicates the exact derivation path used in `build_with_store_internal()`:
+///   mnemonic -> BIP39 seed -> BIP32 master xprv -> 32-byte secret -> KeysManager -> node_id
+/// Runs in ~1ms vs ~4s for full node construction.
+#[napi]
+pub fn derive_node_id(mnemonic_str: String, network_str: String) -> napi::Result<String> {
+  let network = match network_str.as_str() {
+    "mainnet" => Network::Bitcoin,
+    "testnet" => Network::Testnet,
+    "signet" => Network::Signet,
+    "regtest" => Network::Regtest,
+    _ => Network::Signet,
+  };
+
+  let mnemonic = Mnemonic::from_str(&mnemonic_str)
+    .map_err(|e| napi::Error::from_reason(format!("Invalid mnemonic: {e}")))?;
+  let seed_bytes = mnemonic.to_seed("");
+  let xprv = Xpriv::new_master(network, &seed_bytes)
+    .map_err(|e| napi::Error::from_reason(format!("Failed to derive master key: {e}")))?;
+  let ldk_seed: [u8; 32] = xprv.private_key.secret_bytes();
+
+  let keys_manager = LdkKeysManager::new(&ldk_seed, 0, 0, true);
+  let node_id = keys_manager
+    .get_node_id(Recipient::Node)
+    .map_err(|_| napi::Error::from_reason("Failed to derive node ID"))?;
+
+  Ok(node_id.to_string())
 }
 
 fn derive_vss_identifier(mnemonic: &Mnemonic) -> String {
