@@ -8,6 +8,13 @@ export declare function setLogListener(
   minLevel?: string | undefined | null,
 ): void
 export declare function generateMnemonic(): string
+/**
+ * Derive the node public key from a mnemonic and network without building the full node.
+ * This replicates the exact derivation path used in `build_with_store_internal()`:
+ *   mnemonic -> BIP39 seed -> BIP32 master xprv -> 32-byte secret -> KeysManager -> node_id
+ * Runs in ~1ms vs ~4s for full node construction.
+ */
+export declare function deriveNodeId(mnemonicStr: string, networkStr: string): string
 export interface MdkNodeOptions {
   network: string
   mdkApiKey: string
