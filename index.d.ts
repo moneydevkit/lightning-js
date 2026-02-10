@@ -8,6 +8,13 @@ export declare function setLogListener(
   minLevel?: string | undefined | null,
 ): void
 export declare function generateMnemonic(): string
+/**
+ * Derive the node public key from a mnemonic and network without building the full node.
+ * This replicates the exact derivation path used in `build_with_store_internal()`:
+ *   mnemonic -> BIP39 seed -> BIP32 master xprv -> 32-byte secret -> KeysManager -> node_id
+ * Runs in ~1ms vs ~4s for full node construction.
+ */
+export declare function deriveNodeId(mnemonicStr: string, networkStr: string): string
 export interface MdkNodeOptions {
   network: string
   mdkApiKey: string
@@ -49,6 +56,22 @@ export interface NodeChannel {
   isUsable: boolean
   isPublic: boolean
 }
+/**
+ * Information about estimated channel liquidity in a specific direction.
+ * This is useful for debugging and testing scorer persistence.
+ */
+export interface ChannelLiquidity {
+  /** Short channel ID in human-readable format (e.g., "123x456x789") */
+  scid: string
+  /** Source node public key (hex string) */
+  source?: string
+  /** Target node public key (hex string) */
+  target?: string
+  /** Minimum estimated liquidity in millisatoshis */
+  minLiquidityMsat: number
+  /** Maximum estimated liquidity in millisatoshis */
+  maxLiquidityMsat: number
+}
 export declare class MdkNode {
   constructor(options: MdkNodeOptions)
   getNodeId(): string
@@ -77,6 +100,35 @@ export declare class MdkNode {
    */
   getBalanceWhileRunning(): number
   listChannels(): Array<NodeChannel>
+  /**
+   * Get estimated liquidity range for a specific channel direction.
+   *
+   * Returns [min_liquidity_msat, max_liquidity_msat] representing the estimated
+   * available liquidity for sending through the channel towards the target node.
+   *
+   * Returns null if the channel is not found in the scorer.
+   *
+   * Note: The node must be started before calling this method.
+   */
+  getChannelLiquidityRange(scid: string, targetNodeId: string): Array<number> | null
+  /**
+   * List all channels that have liquidity estimates in the scorer.
+   *
+   * This returns channels that have been used in payment attempts and have
+   * liquidity information tracked by the scorer.
+   *
+   * Note: The node must be started before calling this method.
+   */
+  listChannelsWithLiquidity(): Array<ChannelLiquidity>
+  /**
+   * Export the current scorer state as bytes.
+   *
+   * This can be used to compare scorer state before and after payment failures
+   * to verify the scorer is being updated and persisted correctly.
+   *
+   * Note: The node must be started before calling this method.
+   */
+  exportScorerBytes(): Array<number>
   /**
    * Manually sync the RGS snapshot.
    *
