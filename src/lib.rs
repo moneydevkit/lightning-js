@@ -282,6 +282,24 @@ pub struct ReceivedPayment {
   pub amount: i64,
 }
 
+/// Result of a successful outbound payment.
+#[napi(object)]
+pub struct PaymentResult {
+  /// Opaque payment identifier. Always present - can be used to correlate async BOLT12 payments.
+  pub payment_id: String,
+  /// The payment hash from the invoice/offer (identifies the HTLC).
+  /// Available immediately for BOLT11; populated from the PaymentSuccessful event for BOLT12.
+  pub payment_hash: Option<String>,
+  /// The payment preimage (proof of payment). Available after the payment succeeds.
+  pub preimage: Option<String>,
+}
+
+/// Internal result from wait_for_payment_outcome. Not exported via NAPI.
+struct PaymentOutcome {
+  payment_hash: Option<String>,
+  preimage: Option<String>,
+}
+
 #[napi(object)]
 pub struct PaymentEvent {
   pub event_type: PaymentEventType,
@@ -953,11 +971,12 @@ impl MdkNode {
     Ok(())
   }
 
+  /// Wait for a payment to succeed or fail, returning the hash and preimage on success.
   fn wait_for_payment_outcome(
     &self,
     payment_id: &PaymentId,
     timeout_secs: u64,
-  ) -> napi::Result<()> {
+  ) -> napi::Result<PaymentOutcome> {
     eprintln!(
       "[lightning-js] wait_for_payment_outcome start payment_id={} timeout_secs={}",
       bytes_to_hex(&payment_id.0),
@@ -975,6 +994,8 @@ impl MdkNode {
         match event {
           Event::PaymentSuccessful {
             payment_id: event_payment_id,
+            payment_hash,
+            payment_preimage,
             ..
           } => {
             self
@@ -983,8 +1004,16 @@ impl MdkNode {
               .map_err(|err| napi::Error::new(Status::GenericFailure, err.to_string()))?;
 
             if event_payment_id == Some(*payment_id) {
-              eprintln!("[lightning-js] wait_for_payment_outcome success");
-              return Ok(());
+              let hash_hex = bytes_to_hex(&payment_hash.0);
+              let preimage_hex = payment_preimage.map(|p| bytes_to_hex(&p.0));
+              eprintln!(
+                "[lightning-js] wait_for_payment_outcome success hash={}",
+                hash_hex,
+              );
+              return Ok(PaymentOutcome {
+                payment_hash: Some(hash_hex),
+                preimage: preimage_hex,
+              });
             }
           }
           Event::PaymentFailed {
@@ -1005,7 +1034,7 @@ impl MdkNode {
               eprintln!("[lightning-js] wait_for_payment_outcome failure reason={reason_str}");
               return Err(napi::Error::new(
                 Status::GenericFailure,
-                format!("lnurl payment failed: {reason_str}"),
+                format!("payment failed: {reason_str}"),
               ));
             }
           }
@@ -1023,11 +1052,12 @@ impl MdkNode {
       }
 
       if Instant::now() >= deadline {
-        eprintln!(
-          "[lightning-js] Timed out waiting {timeout_secs}s for lnurl payment confirmation"
-        );
+        eprintln!("[lightning-js] Timed out waiting {timeout_secs}s for payment confirmation");
         eprintln!("[lightning-js] wait_for_payment_outcome finished with timeout");
-        return Ok(());
+        return Ok(PaymentOutcome {
+          payment_hash: None,
+          preimage: None,
+        });
       }
 
       std::thread::sleep(POLL_INTERVAL);
@@ -1050,7 +1080,7 @@ impl MdkNode {
     destination: String,
     amount_msat: Option<i64>,
     wait_for_payment_secs: Option<i64>,
-  ) -> napi::Result<String> {
+  ) -> napi::Result<PaymentResult> {
     eprintln!(
       "[lightning-js] pay called destination={} amount_msat={:?} wait_for_payment_secs={:?}",
       destination, amount_msat, wait_for_payment_secs
@@ -1095,7 +1125,7 @@ impl MdkNode {
     destination: String,
     amount_msat: Option<i64>,
     wait_for_payment_secs: Option<i64>,
-  ) -> napi::Result<String> {
+  ) -> napi::Result<PaymentResult> {
     eprintln!(
       "[lightning-js] pay_while_running called destination={} amount_msat={:?} wait_for_payment_secs={:?}",
       destination, amount_msat, wait_for_payment_secs
@@ -1266,7 +1296,7 @@ impl MdkNode {
     &self,
     target: &PaymentTarget,
     wait_secs: Option<u64>,
-  ) -> napi::Result<String> {
+  ) -> napi::Result<PaymentResult> {
     // BOLT12 requires full RGS sync for onion message routing
     if matches!(target, PaymentTarget::Bolt12(_, _)) {
       eprintln!("[lightning-js] doing full RGS sync for BOLT12");
@@ -1293,6 +1323,13 @@ impl MdkNode {
         ),
       ));
     }
+
+    // Extract payment hash from BOLT11 invoice (known before sending).
+    // For BOLT12, the hash is only available after the PaymentSuccessful event.
+    let known_payment_hash = match target {
+      PaymentTarget::Bolt11(invoice, _) => Some(invoice.payment_hash().to_string()),
+      PaymentTarget::Bolt12(_, _) => None,
+    };
 
     // Send payment
     let payment_id = match target {
@@ -1326,16 +1363,28 @@ impl MdkNode {
     })?;
 
     eprintln!(
-      "[lightning-js] payment sent, id={}",
+      "[lightning-js] payment sent, payment_id={}",
       bytes_to_hex(&payment_id.0)
     );
 
-    // Wait for outcome if requested
-    if let Some(secs) = wait_secs {
-      self.wait_for_payment_outcome(&payment_id, secs)?;
-    }
+    let payment_id_hex = bytes_to_hex(&payment_id.0);
 
-    Ok(bytes_to_hex(&payment_id.0))
+    // Wait for outcome if requested, capturing the payment hash and preimage
+    if let Some(secs) = wait_secs {
+      let outcome = self.wait_for_payment_outcome(&payment_id, secs)?;
+      Ok(PaymentResult {
+        payment_id: payment_id_hex,
+        // Prefer the hash from the invoice (BOLT11); fall back to the event hash (BOLT12)
+        payment_hash: known_payment_hash.or(outcome.payment_hash),
+        preimage: outcome.preimage,
+      })
+    } else {
+      Ok(PaymentResult {
+        payment_id: payment_id_hex,
+        payment_hash: known_payment_hash,
+        preimage: None,
+      })
+    }
   }
 }
 
