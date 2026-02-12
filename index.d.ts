@@ -35,6 +35,16 @@ export interface ReceivedPayment {
   paymentHash: string
   amount: number
 }
+/** Result of a successful outbound payment. */
+export interface PaymentResult {
+  /**
+   * The payment hash from the invoice/offer (identifies the HTLC).
+   * Available immediately for BOLT11; populated from the PaymentSuccessful event for BOLT12.
+   */
+  paymentHash?: string
+  /** The payment preimage (proof of payment). Available after the payment succeeds. */
+  preimage?: string
+}
 export interface PaymentEvent {
   eventType: PaymentEventType
   paymentHash: string
@@ -147,7 +157,7 @@ export declare class MdkNode {
     destination: string,
     amountMsat?: number | undefined | null,
     waitForPaymentSecs?: number | undefined | null,
-  ): string
+  ): PaymentResult
   /**
    * Unified payment method that auto-detects the destination type.
    * Use this when the node is already running via start_receiving().
@@ -165,5 +175,5 @@ export declare class MdkNode {
     destination: string,
     amountMsat?: number | undefined | null,
     waitForPaymentSecs?: number | undefined | null,
-  ): string
+  ): PaymentResult
 }
