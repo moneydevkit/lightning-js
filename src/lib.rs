@@ -285,6 +285,8 @@ pub struct ReceivedPayment {
 /// Result of a successful outbound payment.
 #[napi(object)]
 pub struct PaymentResult {
+  /// Opaque payment identifier. Always present - can be used to correlate async BOLT12 payments.
+  pub payment_id: String,
   /// The payment hash from the invoice/offer (identifies the HTLC).
   /// Available immediately for BOLT11; populated from the PaymentSuccessful event for BOLT12.
   pub payment_hash: Option<String>,
@@ -1005,9 +1007,8 @@ impl MdkNode {
               let hash_hex = bytes_to_hex(&payment_hash.0);
               let preimage_hex = payment_preimage.map(|p| bytes_to_hex(&p.0));
               eprintln!(
-                "[lightning-js] wait_for_payment_outcome success hash={} preimage={}",
+                "[lightning-js] wait_for_payment_outcome success hash={}",
                 hash_hex,
-                preimage_hex.as_deref().unwrap_or("none"),
               );
               return Ok(PaymentOutcome {
                 payment_hash: Some(hash_hex),
@@ -1366,16 +1367,20 @@ impl MdkNode {
       bytes_to_hex(&payment_id.0)
     );
 
+    let payment_id_hex = bytes_to_hex(&payment_id.0);
+
     // Wait for outcome if requested, capturing the payment hash and preimage
     if let Some(secs) = wait_secs {
       let outcome = self.wait_for_payment_outcome(&payment_id, secs)?;
       Ok(PaymentResult {
+        payment_id: payment_id_hex,
         // Prefer the hash from the invoice (BOLT11); fall back to the event hash (BOLT12)
         payment_hash: known_payment_hash.or(outcome.payment_hash),
         preimage: outcome.preimage,
       })
     } else {
       Ok(PaymentResult {
+        payment_id: payment_id_hex,
         payment_hash: known_payment_hash,
         preimage: None,
       })
