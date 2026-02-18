@@ -104,6 +104,7 @@ export declare class MdkNode {
    * snapshot will be updated from the last known sync point.
    */
   syncRgs(doFullSync: boolean): number
+  updateChainTip(): void
   receivePayment(minThresholdMs: number, quietThresholdMs: number): Array<ReceivedPayment>
   getInvoice(amount: number, description: string, expirySecs: number): PaymentMetadata
   /**

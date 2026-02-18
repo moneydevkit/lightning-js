@@ -641,6 +641,14 @@ impl MdkNode {
   }
 
   #[napi]
+  pub fn update_chain_tip(&self) -> napi::Result<()> {
+    self
+      .node
+      .update_chain_tip()
+      .map_err(|e| napi::Error::from_reason(format!("Failed to update chain tip: {e}")))
+  }
+
+  #[napi]
   pub fn receive_payment(
     &self,
     min_threshold_ms: i64,
@@ -784,20 +792,15 @@ impl MdkNode {
 
   #[napi]
   pub fn get_invoice(&self, amount: i64, description: String, expiry_secs: i64) -> PaymentMetadata {
-    if let Err(err) = self.node.start() {
-      eprintln!("[lightning-js] Failed to start node for get_invoice: {err}");
-      panic!("failed to start node for get_invoice: {err}");
-    }
-    if let Err(err) = self.node.sync_wallets() {
-      eprintln!("[lightning-js] Failed to sync wallets: {err}");
-      panic!("failed to sync wallets: {err}");
+    // Lightweight chain tip update ensures highest_seen_timestamp is current
+    // for correct invoice expiry calculation. ~200ms vs seconds for full sync_wallets.
+    eprintln!("[lightning-js] to update chain tip for get_invoice");
+    if let Err(err) = self.node.update_chain_tip() {
+      eprintln!("[lightning-js] Failed to update chain tip for get_invoice: {err}");
+      // Non-fatal: invoice will still work if timestamp is recent enough (2h buffer)
     }
 
     let result = self.get_invoice_impl(Some(amount), description, expiry_secs);
-
-    if let Err(err) = self.node.stop() {
-      eprintln!("[lightning-js] Failed to stop node after get_invoice: {err}");
-    }
 
     result.unwrap()
   }
@@ -855,6 +858,10 @@ impl MdkNode {
     description: String,
     expiry_secs: i64,
   ) -> PaymentMetadata {
+    if let Err(err) = self.node.update_chain_tip() {
+      eprintln!("[lightning-js] Failed to update chain tip for get_invoice_with_scid: {err}");
+    }
+
     let bolt11_invoice_description =
       Bolt11InvoiceDescription::Direct(Description::new(description).unwrap());
 
@@ -893,6 +900,12 @@ impl MdkNode {
     description: String,
     expiry_secs: i64,
   ) -> PaymentMetadata {
+    if let Err(err) = self.node.update_chain_tip() {
+      eprintln!(
+        "[lightning-js] Failed to update chain tip for get_variable_amount_jit_invoice_with_scid: {err}"
+      );
+    }
+
     let bolt11_invoice_description =
       Bolt11InvoiceDescription::Direct(Description::new(description).unwrap());
 
