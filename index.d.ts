@@ -71,6 +71,12 @@ export interface NodeChannel {
 }
 export declare class MdkNode {
   constructor(options: MdkNodeOptions)
+  /**
+   * Destroy the node, dropping the inner Rust Node and its tokio runtime immediately.
+   * This prevents zombie processes on serverless platforms where GC is non-deterministic.
+   * After calling destroy(), any further method calls on this node will panic.
+   */
+  destroy(): void
   getNodeId(): string
   start(): void
   stop(): void

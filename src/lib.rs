@@ -330,7 +330,7 @@ pub struct NodeChannel {
 
 #[napi]
 pub struct MdkNode {
-  node: Node,
+  node: Option<Node>,
   network: Network,
 }
 
@@ -378,17 +378,37 @@ impl MdkNode {
       .build_with_vss_store_and_fixed_headers(options.vss_url, vss_identifier, vss_headers)
       .map_err(|err| napi::Error::from_reason(err.to_string()))?;
 
-    Ok(Self { node, network })
+    Ok(Self {
+      node: Some(node),
+      network,
+    })
+  }
+
+  /// Get a reference to the inner Node, panicking if already destroyed.
+  fn node(&self) -> &Node {
+    self.node.as_ref().expect("MdkNode has been destroyed")
+  }
+
+  /// Destroy the node, dropping the inner Rust Node and its tokio runtime immediately.
+  /// This prevents zombie processes on serverless platforms where GC is non-deterministic.
+  /// After calling destroy(), any further method calls on this node will panic.
+  #[napi]
+  pub fn destroy(&mut self) -> napi::Result<()> {
+    if let Some(node) = self.node.take() {
+      let _ = node.stop();
+      drop(node);
+    }
+    Ok(())
   }
 
   #[napi]
   pub fn get_node_id(&self) -> String {
-    self.node.node_id().to_string()
+    self.node().node_id().to_string()
   }
 
   #[napi]
   pub fn start(&self) {
-    if let Err(err) = self.node.start() {
+    if let Err(err) = self.node().start() {
       eprintln!("[lightning-js] Failed to start node via start(): {err}");
       panic!("failed to start node: {err}");
     }
@@ -396,7 +416,7 @@ impl MdkNode {
 
   #[napi]
   pub fn stop(&self) {
-    if let Err(err) = self.node.stop() {
+    if let Err(err) = self.node().stop() {
       eprintln!("[lightning-js] Failed to stop node via stop(): {err}");
       panic!("failed to stop node: {err}");
     }
@@ -405,14 +425,14 @@ impl MdkNode {
   /// Start the node and sync wallets. Call once before polling for events.
   #[napi]
   pub fn start_receiving(&self) -> napi::Result<()> {
-    self.node.start().map_err(|e| {
+    self.node().start().map_err(|e| {
       eprintln!("[lightning-js] Failed to start node in start_receiving: {e}");
       napi::Error::from_reason(format!("Failed to start: {e}"))
     })?;
 
-    self.node.sync_wallets().map_err(|e| {
+    self.node().sync_wallets().map_err(|e| {
       eprintln!("[lightning-js] Failed to sync wallets in start_receiving: {e}");
-      let _ = self.node.stop();
+      let _ = self.node().stop();
       napi::Error::from_reason(format!("Failed to sync: {e}"))
     })
   }
@@ -423,7 +443,7 @@ impl MdkNode {
   #[napi]
   pub fn next_event(&self) -> Option<PaymentEvent> {
     loop {
-      match self.node.next_event() {
+      match self.node().next_event() {
         Some(event) => {
           let payment_event = match &event {
             Event::PaymentClaimable {
@@ -445,7 +465,7 @@ impl MdkNode {
             } => {
               let payer_note = payment_id.and_then(|pid| {
                 self
-                  .node
+                  .node()
                   .payment(&pid)
                   .and_then(|details| match details.kind {
                     PaymentKind::Bolt12Offer { payer_note, .. } => {
@@ -487,7 +507,7 @@ impl MdkNode {
           // For non-payment events, ACK and continue to next event
           // Potentially problematic if a payout is happening at the same time
           // but this is the existing behavior.
-          let _ = self.node.event_handled();
+          let _ = self.node().event_handled();
         }
         None => return None,
       }
@@ -499,7 +519,7 @@ impl MdkNode {
   #[napi]
   pub fn ack_event(&self) -> napi::Result<()> {
     self
-      .node
+      .node()
       .event_handled()
       .map_err(|e| napi::Error::from_reason(format!("Failed to ack event: {e}")))
   }
@@ -508,24 +528,24 @@ impl MdkNode {
   #[napi]
   pub fn stop_receiving(&self) -> napi::Result<()> {
     self
-      .node
+      .node()
       .stop()
       .map_err(|e| napi::Error::from_reason(format!("Failed to stop: {e}")))
   }
 
   #[napi]
   pub fn sync_wallets(&self) {
-    if let Err(err) = self.node.start() {
+    if let Err(err) = self.node().start() {
       eprintln!("[lightning-js] Failed to start node via start(): {err}");
       panic!("failed to start node: {err}");
     }
 
-    if let Err(err) = self.node.sync_wallets() {
+    if let Err(err) = self.node().sync_wallets() {
       eprintln!("[lightning-js] Failed to sync wallets: {err}");
       panic!("failed to sync wallets: {err}");
     }
 
-    let channels = self.node.list_channels();
+    let channels = self.node().list_channels();
     for c in channels {
       eprintln!(
         "{} accept_underpaying_htlcs={:?}",
@@ -533,7 +553,7 @@ impl MdkNode {
       );
     }
 
-    let peers = self.node.list_peers();
+    let peers = self.node().list_peers();
     for peer in peers {
       eprintln!(
         "[lightning-js] Peer node_id={} address={} persisted={} connected={}",
@@ -541,7 +561,7 @@ impl MdkNode {
       );
     }
 
-    if let Err(err) = self.node.stop() {
+    if let Err(err) = self.node().stop() {
       eprintln!("[lightning-js] Failed to stop node via stop(): {err}");
       panic!("failed to stop node: {err}");
     }
@@ -549,14 +569,14 @@ impl MdkNode {
 
   #[napi]
   pub fn get_balance(&self) -> i64 {
-    if let Err(err) = self.node.start() {
+    if let Err(err) = self.node().start() {
       eprintln!("[lightning-js] Failed to start node via get_balance: {err}");
       panic!("failed to start node: {err}");
     }
 
-    if let Err(err) = self.node.sync_wallets() {
+    if let Err(err) = self.node().sync_wallets() {
       eprintln!("[lightning-js] Failed to sync wallets in get_balance: {err}");
-      if let Err(stop_err) = self.node.stop() {
+      if let Err(stop_err) = self.node().stop() {
         eprintln!(
           "[lightning-js] Failed to stop node after sync_wallets error in get_balance: {stop_err}"
         );
@@ -566,7 +586,7 @@ impl MdkNode {
 
     let balance = self.get_balance_impl();
 
-    if let Err(err) = self.node.stop() {
+    if let Err(err) = self.node().stop() {
       eprintln!("[lightning-js] Failed to stop node via stop() in get_balance: {err}");
       panic!("failed to stop node: {err}");
     }
@@ -583,7 +603,7 @@ impl MdkNode {
 
   fn get_balance_impl(&self) -> i64 {
     let total_outbound_msat = self
-      .node
+      .node()
       .list_channels()
       .into_iter()
       .fold(0u64, |acc, channel| {
@@ -596,7 +616,7 @@ impl MdkNode {
   #[napi]
   pub fn list_channels(&self) -> Vec<NodeChannel> {
     self
-      .node
+      .node()
       .list_channels()
       .into_iter()
       .map(|details| {
@@ -633,11 +653,19 @@ impl MdkNode {
       .map_err(|e| napi::Error::from_reason(format!("Failed to create runtime: {}", e)))?;
     rt.block_on(async {
       self
-        .node
+        .node()
         .sync_rgs(do_full_sync)
         .await
         .map_err(|e| napi::Error::from_reason(format!("Failed to sync RGS: {}", e)))
     })
+  }
+
+  #[napi]
+  pub fn update_chain_tip(&self) -> napi::Result<()> {
+    self
+      .node()
+      .update_chain_tip()
+      .map_err(|e| napi::Error::from_reason(format!("Failed to update chain tip: {e}")))
   }
 
   #[napi]
@@ -652,12 +680,12 @@ impl MdkNode {
     let mut received_payments = vec![];
     let mut pending_claims: HashSet<PaymentHash> = HashSet::new();
 
-    if let Err(err) = self.node.start() {
+    if let Err(err) = self.node().start() {
       eprintln!("[lightning-js] Failed to start node in receive_payment: {err}");
       return received_payments;
     }
 
-    if let Err(err) = self.node.sync_wallets() {
+    if let Err(err) = self.node().sync_wallets() {
       eprintln!("[lightning-js] Failed to sync wallets: {err}");
       panic!("failed to sync wallets: {err}");
     }
@@ -694,7 +722,7 @@ impl MdkNode {
         break;
       }
 
-      if let Some(event) = self.node.next_event() {
+      if let Some(event) = self.node().next_event() {
         eprintln!("[lightning-js] Event: {event:?}");
 
         match &event {
@@ -766,7 +794,7 @@ impl MdkNode {
           });
         }
 
-        if let Err(err) = self.node.event_handled() {
+        if let Err(err) = self.node().event_handled() {
           eprintln!("[lightning-js] Error while marking event handled: {err}");
         }
         last_event_time = now;
@@ -775,7 +803,7 @@ impl MdkNode {
       std::thread::sleep(POLL_INTERVAL);
     }
 
-    if let Err(err) = self.node.stop() {
+    if let Err(err) = self.node().stop() {
       eprintln!("[lightning-js] Failed to stop node after receive_payment: {err}");
     }
 
@@ -791,6 +819,12 @@ impl MdkNode {
     if let Err(err) = self.node.sync_wallets() {
       eprintln!("[lightning-js] Failed to sync wallets: {err}");
       panic!("failed to sync wallets: {err}");
+    // Lightweight chain tip update ensures highest_seen_timestamp is current
+    // for correct invoice expiry calculation. ~200ms vs seconds for full sync_wallets.
+    eprintln!("[lightning-js] to update chain tip for get_invoice");
+    if let Err(err) = self.node().update_chain_tip() {
+      eprintln!("[lightning-js] Failed to update chain tip for get_invoice: {err}");
+      // Non-fatal: invoice will still work if timestamp is recent enough (2h buffer)
     }
 
     let result = self.get_invoice_impl(Some(amount), description, expiry_secs);
@@ -835,7 +869,7 @@ impl MdkNode {
       Bolt11InvoiceDescription::Direct(Description::new(description).unwrap());
 
     let invoice = self
-      .node
+      .node()
       .bolt11_payment()
       .receive_via_lsps4_jit_channel(
         amount.map(|a| a as u64),
@@ -855,13 +889,17 @@ impl MdkNode {
     description: String,
     expiry_secs: i64,
   ) -> PaymentMetadata {
+    if let Err(err) = self.node().update_chain_tip() {
+      eprintln!("[lightning-js] Failed to update chain tip for get_invoice_with_scid: {err}");
+    }
+
     let bolt11_invoice_description =
       Bolt11InvoiceDescription::Direct(Description::new(description).unwrap());
 
     let scid = scid_from_human_readable_string(&human_readable_scid).unwrap();
 
     let bolt11 = self
-      .node
+      .node()
       .bolt11_payment()
       .receive_via_lsps4_jit_channel_with_scid(
         scid,
@@ -893,13 +931,19 @@ impl MdkNode {
     description: String,
     expiry_secs: i64,
   ) -> PaymentMetadata {
+    if let Err(err) = self.node().update_chain_tip() {
+      eprintln!(
+        "[lightning-js] Failed to update chain tip for get_variable_amount_jit_invoice_with_scid: {err}"
+      );
+    }
+
     let bolt11_invoice_description =
       Bolt11InvoiceDescription::Direct(Description::new(description).unwrap());
 
     let scid = scid_from_human_readable_string(&human_readable_scid).unwrap();
 
     let bolt11 = self
-      .node
+      .node()
       .bolt11_payment()
       .receive_via_lsps4_jit_channel_with_scid(
         scid,
@@ -924,7 +968,7 @@ impl MdkNode {
     self.setup_bolt12_receive()?;
 
     let offer = self
-      .node
+      .node()
       .bolt12_payment()
       .receive_via_lsps4_jit_channel(
         amount as u64,
@@ -948,7 +992,7 @@ impl MdkNode {
     self.setup_bolt12_receive()?;
 
     let offer = self
-      .node
+      .node()
       .bolt12_payment()
       .receive_variable_amount_via_lsps4_jit_channel(&description, expiry_secs.map(|s| s as u32))
       .map_err(|e| napi::Error::from_reason(format!("Failed to get BOLT12 offer: {e}")))?;
@@ -963,7 +1007,7 @@ impl MdkNode {
     eprintln!("[lightning-js] doing full RGS sync for BOLT12 receive");
     let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
     rt.block_on(async {
-      match self.node.sync_rgs(true).await {
+      match self.node().sync_rgs(true).await {
         Ok(ts) => eprintln!("[lightning-js] RGS sync complete, timestamp={ts}"),
         Err(e) => eprintln!("[lightning-js] RGS sync failed: {e}"),
       }
@@ -986,7 +1030,7 @@ impl MdkNode {
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
 
     loop {
-      if let Some(event) = self.node.next_event() {
+      if let Some(event) = self.node().next_event() {
         eprintln!(
           "[lightning-js] wait_for_payment_outcome saw event: {:?}",
           event
@@ -999,7 +1043,7 @@ impl MdkNode {
             ..
           } => {
             self
-              .node
+              .node()
               .event_handled()
               .map_err(|err| napi::Error::new(Status::GenericFailure, err.to_string()))?;
 
@@ -1022,7 +1066,7 @@ impl MdkNode {
             ..
           } => {
             self
-              .node
+              .node()
               .event_handled()
               .map_err(|err| napi::Error::new(Status::GenericFailure, err.to_string()))?;
 
@@ -1044,7 +1088,7 @@ impl MdkNode {
               event
             );
             self
-              .node
+              .node()
               .event_handled()
               .map_err(|err| napi::Error::new(Status::GenericFailure, err.to_string()))?;
           }
@@ -1090,13 +1134,13 @@ impl MdkNode {
       self.resolve_payment_target(destination, amount_msat, wait_for_payment_secs)?;
 
     // Start node
-    self.node.start().map_err(|e| {
+    self.node().start().map_err(|e| {
       napi::Error::new(Status::GenericFailure, format!("failed to start node: {e}"))
     })?;
 
     // Sync wallets
-    if let Err(e) = self.node.sync_wallets() {
-      let _ = self.node.stop();
+    if let Err(e) = self.node().sync_wallets() {
+      let _ = self.node().stop();
       return Err(napi::Error::new(
         Status::GenericFailure,
         format!("failed to sync wallets: {e}"),
@@ -1104,7 +1148,7 @@ impl MdkNode {
     }
 
     let result = self.execute_payment_impl(&payment_target, wait_secs);
-    let _ = self.node.stop();
+    let _ = self.node().stop();
     result
   }
 
@@ -1302,7 +1346,7 @@ impl MdkNode {
       eprintln!("[lightning-js] doing full RGS sync for BOLT12");
       let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
       rt.block_on(async {
-        match self.node.sync_rgs(true).await {
+        match self.node().sync_rgs(true).await {
           Ok(ts) => eprintln!("[lightning-js] RGS sync complete, timestamp={ts}"),
           Err(e) => eprintln!("[lightning-js] RGS sync failed: {e}"),
         }
@@ -1310,8 +1354,8 @@ impl MdkNode {
     }
 
     // Wait for channels and check balance
-    wait_for_usable_channels(&self.node);
-    let available = usable_outbound_capacity_msat(&self.node);
+    wait_for_usable_channels(self.node());
+    let available = usable_outbound_capacity_msat(self.node());
     eprintln!("[lightning-js] available outbound capacity: {available}msat");
 
     let required = target.amount_msat();
@@ -1340,13 +1384,13 @@ impl MdkNode {
           amount
         );
         self
-          .node
+          .node()
           .bolt11_payment()
           .send_using_amount(invoice, *amount, None)
       }
       PaymentTarget::Bolt12(offer, amount) => {
         eprintln!("[lightning-js] sending BOLT12 offer_id={}", offer.id());
-        self.node.bolt12_payment().send_using_amount(
+        self.node().bolt12_payment().send_using_amount(
           offer,
           *amount,
           None,
