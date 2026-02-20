@@ -661,14 +661,6 @@ impl MdkNode {
   }
 
   #[napi]
-  pub fn update_chain_tip(&self) -> napi::Result<()> {
-    self
-      .node()
-      .update_chain_tip()
-      .map_err(|e| napi::Error::from_reason(format!("Failed to update chain tip: {e}")))
-  }
-
-  #[napi]
   pub fn receive_payment(
     &self,
     min_threshold_ms: i64,
@@ -883,10 +875,6 @@ impl MdkNode {
     description: String,
     expiry_secs: i64,
   ) -> PaymentMetadata {
-    if let Err(err) = self.node().update_chain_tip() {
-      eprintln!("[lightning-js] Failed to update chain tip for get_invoice_with_scid: {err}");
-    }
-
     let bolt11_invoice_description =
       Bolt11InvoiceDescription::Direct(Description::new(description).unwrap());
 
@@ -925,12 +913,6 @@ impl MdkNode {
     description: String,
     expiry_secs: i64,
   ) -> PaymentMetadata {
-    if let Err(err) = self.node().update_chain_tip() {
-      eprintln!(
-        "[lightning-js] Failed to update chain tip for get_variable_amount_jit_invoice_with_scid: {err}"
-      );
-    }
-
     let bolt11_invoice_description =
       Bolt11InvoiceDescription::Direct(Description::new(description).unwrap());
 
