@@ -378,7 +378,10 @@ impl MdkNode {
       .build_with_vss_store_and_fixed_headers(options.vss_url, vss_identifier, vss_headers)
       .map_err(|err| napi::Error::from_reason(err.to_string()))?;
 
-    Ok(Self { node: Some(node), network })
+    Ok(Self {
+      node: Some(node),
+      network,
+    })
   }
 
   /// Get a reference to the inner Node, panicking if already destroyed.
