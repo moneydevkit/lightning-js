@@ -392,9 +392,16 @@ impl MdkNode {
   /// Destroy the node, dropping the inner Rust Node and its tokio runtime immediately.
   /// This prevents zombie processes on serverless platforms where GC is non-deterministic.
   /// After calling destroy(), any further method calls on this node will panic.
+  ///
+  /// Always disconnects all peers first to close TCP connections. This is critical on
+  /// serverless platforms (e.g., Vercel) where the execution context may freeze after the
+  /// handler returns — a lingering TCP connection tricks the LSP into thinking the peer
+  /// is still reachable, causing it to forward HTLCs directly instead of intercepting
+  /// them and sending a webhook.
   #[napi]
   pub fn destroy(&mut self) -> napi::Result<()> {
     if let Some(node) = self.node.take() {
+      node.disconnect_all_peers();
       let _ = node.stop();
       drop(node);
     }
