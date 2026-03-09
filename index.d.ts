@@ -53,11 +53,16 @@ export interface PaymentEvent {
   amountMsat?: number
   reason?: string
   payerNote?: string
+  /** Opaque payment identifier. Present for Sent and Failed (outbound) events. */
+  paymentId?: string
+  /** Payment preimage (proof of payment). Present for Sent events. */
+  preimage?: string
 }
 export const enum PaymentEventType {
   Claimable = 0,
   Received = 1,
   Failed = 2,
+  Sent = 3
 }
 export interface NodeChannel {
   channelId: string
