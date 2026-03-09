@@ -307,6 +307,10 @@ pub struct PaymentEvent {
   pub amount_msat: Option<i64>,
   pub reason: Option<String>,
   pub payer_note: Option<String>,
+  /// Opaque payment identifier. Present for Sent and Failed (outbound) events.
+  pub payment_id: Option<String>,
+  /// Payment preimage (proof of payment). Present for Sent events.
+  pub preimage: Option<String>,
 }
 
 #[napi]
@@ -314,6 +318,7 @@ pub enum PaymentEventType {
   Claimable,
   Received,
   Failed,
+  Sent,
 }
 
 #[napi(object)]
@@ -463,6 +468,8 @@ impl MdkNode {
               amount_msat: Some(*claimable_amount_msat as i64),
               reason: None,
               payer_note: None,
+              payment_id: None,
+              preimage: None,
             }),
             Event::PaymentReceived {
               payment_id,
@@ -490,9 +497,12 @@ impl MdkNode {
                 amount_msat: Some(*amount_msat as i64),
                 reason: None,
                 payer_note,
+                payment_id: None,
+                preimage: None,
               })
             }
             Event::PaymentFailed {
+              payment_id: event_pid,
               payment_hash,
               reason,
               ..
@@ -502,6 +512,22 @@ impl MdkNode {
               amount_msat: None,
               reason: reason.map(|r| format!("{r:?}")),
               payer_note: None,
+              payment_id: event_pid.map(|id| bytes_to_hex(&id.0)),
+              preimage: None,
+            }),
+            Event::PaymentSuccessful {
+              payment_id: event_pid,
+              payment_hash,
+              payment_preimage,
+              ..
+            } => Some(PaymentEvent {
+              event_type: PaymentEventType::Sent,
+              payment_hash: bytes_to_hex(&payment_hash.0),
+              amount_msat: None,
+              reason: None,
+              payer_note: None,
+              payment_id: event_pid.map(|id| bytes_to_hex(&id.0)),
+              preimage: payment_preimage.map(|p| bytes_to_hex(&p.0)),
             }),
             _ => None,
           };
