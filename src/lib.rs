@@ -1,5 +1,12 @@
 #![deny(clippy::all)]
 
+/// Use jemalloc to reduce memory fragmentation during channel monitor
+/// deserialization and node boot. glibc malloc fragments heavily with
+/// Rust's alloc patterns (not available on Windows).
+#[cfg(unix)]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 use std::{
   collections::{HashMap, HashSet},
   convert::TryFrom,

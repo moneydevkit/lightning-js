@@ -7,6 +7,9 @@ version      = "0.1.0"
 [lib]
 crate-type = ["cdylib"]
 
+[target.'cfg(unix)'.dependencies]
+tikv-jemallocator = { version = "0.6", features = ["disable_initial_exec_tls"] }
+
 [dependencies]
 bitcoin-payment-instructions = { version = "0.5.0", default-features = false, features = [
   "http",
