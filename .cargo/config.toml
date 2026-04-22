@@ -1,5 +1,8 @@
-[target.aarch64-unknown-linux-musl]
-linker = "aarch64-linux-musl-gcc"
-rustflags = ["-C", "target-feature=-crt-static"]
+# Native Linux builds: use mold for faster linking
+[target.'cfg(target_os = "linux")']
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+# Cross-compilation settings for CI (yarn build)
+# These are used by GitHub Actions, not by Nix builds
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
