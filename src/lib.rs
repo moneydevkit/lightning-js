@@ -42,7 +42,7 @@ use ldk_node::{
     hashes::{Hash, sha256},
     secp256k1::PublicKey,
   },
-  config::Config,
+  config::{Config, EsploraSyncConfig},
   generate_entropy_mnemonic,
   lightning::ln::channelmanager::PaymentId,
   lightning::sign::{KeysManager as LdkKeysManager, NodeSigner, Recipient},
@@ -507,7 +507,12 @@ impl MdkNode {
 
     let mut builder = Builder::from_config(config);
     builder.set_network(network);
-    builder.set_chain_source_esplora(options.esplora_url, None);
+    // Disable background wallet syncing. These nodes are intended to be short
+    // lived and are kept in sync via other means.
+    let esplora_sync_config = EsploraSyncConfig {
+      background_sync_config: None,
+    };
+    builder.set_chain_source_esplora(options.esplora_url, Some(esplora_sync_config));
     builder.set_gossip_source_rgs(options.rgs_url);
     builder.set_entropy_bip39_mnemonic(mnemonic, None);
     let logger_arc = Arc::clone(logger_instance());
@@ -679,6 +684,7 @@ impl MdkNode {
   ///
   /// If `splice.enabled` is set on construction (the default), also spawns
   /// the auto-splice background task on the dedicated splice runtime.
+  /// Start the node. Call once before polling for events.
   #[napi]
   pub fn start_receiving(&self) -> napi::Result<()> {
     self.node().start().map_err(|e| {
@@ -1050,11 +1056,6 @@ impl MdkNode {
       return received_payments;
     }
 
-    if let Err(err) = self.node().sync_wallets() {
-      eprintln!("[lightning-js] Failed to sync wallets: {err}");
-      panic!("failed to sync wallets: {err}");
-    }
-
     let start_sync_at = std::time::Instant::now();
     let mut last_event_time = start_sync_at;
 
@@ -1180,10 +1181,6 @@ impl MdkNode {
     if let Err(err) = self.node().start() {
       eprintln!("[lightning-js] Failed to start node for get_invoice: {err}");
       panic!("failed to start node for get_invoice: {err}");
-    }
-    if let Err(err) = self.node().sync_wallets() {
-      eprintln!("[lightning-js] Failed to sync wallets: {err}");
-      panic!("failed to sync wallets: {err}");
     }
 
     let result = self.get_invoice_impl(Some(amount), description, expiry_secs);
@@ -1486,15 +1483,6 @@ impl MdkNode {
     self.node().start().map_err(|e| {
       napi::Error::new(Status::GenericFailure, format!("failed to start node: {e}"))
     })?;
-
-    // Sync wallets
-    if let Err(e) = self.node().sync_wallets() {
-      let _ = self.node().stop();
-      return Err(napi::Error::new(
-        Status::GenericFailure,
-        format!("failed to sync wallets: {e}"),
-      ));
-    }
 
     let result = self.execute_payment_impl(&payment_target, wait_secs);
     let _ = self.node().stop();
