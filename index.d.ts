@@ -15,6 +15,21 @@ export declare function generateMnemonic(): string
  * Runs in ~1ms vs ~4s for full node construction.
  */
 export declare function deriveNodeId(mnemonicStr: string, networkStr: string): string
+export interface ScoringParamOverrides {
+  basePenaltyMsat?: number
+  basePenaltyAmountMultiplierMsat?: number
+  liquidityPenaltyMultiplierMsat?: number
+  liquidityPenaltyAmountMultiplierMsat?: number
+  historicalLiquidityPenaltyMultiplierMsat?: number
+  historicalLiquidityPenaltyAmountMultiplierMsat?: number
+  antiProbingPenaltyMsat?: number
+  consideredImpossiblePenaltyMsat?: number
+  linearSuccessProbability?: boolean
+  probingDiversityPenaltyMsat?: number
+  liquidityOffsetHalfLifeSecs?: number
+  historicalNoUpdatesHalfLifeSecs?: number
+  manualNodePenalties?: Record<string, number>
+}
 export interface MdkNodeOptions {
   network: string
   mdkApiKey: string
@@ -24,6 +39,7 @@ export interface MdkNodeOptions {
   mnemonic: string
   lspNodeId: string
   lspAddress: string
+  scoringParamOverrides?: ScoringParamOverrides
 }
 export interface PaymentMetadata {
   bolt11: string

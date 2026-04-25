@@ -15,7 +15,7 @@ bitcoin-payment-instructions = { version = "0.5.0", default-features = false, fe
   "http",
 ] }
 # Branch: https://github.com/moneydevkit/ldk-node/commits/lsp-0.7.0_accept-underpaying-htlcs_with_timing_logs
-ldk-node = { default-features = false, git = "https://github.com/moneydevkit/ldk-node.git", rev = "e935695c6ea9b33efee4cf579207ec84b40ce71f" }
+ldk-node = { default-features = false, git = "https://github.com/moneydevkit/ldk-node.git", rev = "5baa1f83a13407818b069b1f990157c8761eb982" }
 #ldk-node = { path = "../ldk-node" }
 
 napi        = { version = "2", features = ["napi4"] }

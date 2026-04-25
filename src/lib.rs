@@ -28,9 +28,13 @@ use napi::{
   threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode},
 };
 
+use ldk_node::lightning::routing::gossip::NodeId;
+use ldk_node::lightning::routing::scoring::{
+  ProbabilisticScoringDecayParameters, ProbabilisticScoringFeeParameters,
+};
 use ldk_node::logger::{LogLevel, LogRecord, LogWriter};
 use ldk_node::{
-  Builder, Event, Node,
+  Builder, Event, Node, ProbabilisticScoringParameters,
   bip39::Mnemonic,
   bitcoin::{
     Network,
@@ -264,6 +268,24 @@ fn derive_vss_identifier(mnemonic: &Mnemonic) -> String {
 }
 
 #[napi(object)]
+#[derive(Default)]
+pub struct ScoringParamOverrides {
+  pub base_penalty_msat: Option<i64>,
+  pub base_penalty_amount_multiplier_msat: Option<i64>,
+  pub liquidity_penalty_multiplier_msat: Option<i64>,
+  pub liquidity_penalty_amount_multiplier_msat: Option<i64>,
+  pub historical_liquidity_penalty_multiplier_msat: Option<i64>,
+  pub historical_liquidity_penalty_amount_multiplier_msat: Option<i64>,
+  pub anti_probing_penalty_msat: Option<i64>,
+  pub considered_impossible_penalty_msat: Option<i64>,
+  pub linear_success_probability: Option<bool>,
+  pub probing_diversity_penalty_msat: Option<i64>,
+  pub liquidity_offset_half_life_secs: Option<i64>,
+  pub historical_no_updates_half_life_secs: Option<i64>,
+  pub manual_node_penalties: Option<HashMap<String, i64>>,
+}
+
+#[napi(object)]
 pub struct MdkNodeOptions {
   pub network: String,
   pub mdk_api_key: String,
@@ -273,6 +295,7 @@ pub struct MdkNodeOptions {
   pub mnemonic: String,
   pub lsp_node_id: String,
   pub lsp_address: String,
+  pub scoring_param_overrides: Option<ScoringParamOverrides>,
 }
 
 #[napi(object)]
@@ -380,6 +403,63 @@ impl MdkNode {
     let logger: Arc<dyn LogWriter> = logger_arc;
     builder.set_custom_logger(logger);
     builder.set_liquidity_source_lsps4(lsp_node_id, lsp_address);
+
+    if let Some(scoring) = options.scoring_param_overrides {
+      let mut fee_params = ProbabilisticScoringFeeParameters::default();
+      if let Some(v) = scoring.base_penalty_msat {
+        fee_params.base_penalty_msat = v as u64;
+      }
+      if let Some(v) = scoring.base_penalty_amount_multiplier_msat {
+        fee_params.base_penalty_amount_multiplier_msat = v as u64;
+      }
+      if let Some(v) = scoring.liquidity_penalty_multiplier_msat {
+        fee_params.liquidity_penalty_multiplier_msat = v as u64;
+      }
+      if let Some(v) = scoring.liquidity_penalty_amount_multiplier_msat {
+        fee_params.liquidity_penalty_amount_multiplier_msat = v as u64;
+      }
+      if let Some(v) = scoring.historical_liquidity_penalty_multiplier_msat {
+        fee_params.historical_liquidity_penalty_multiplier_msat = v as u64;
+      }
+      if let Some(v) = scoring.historical_liquidity_penalty_amount_multiplier_msat {
+        fee_params.historical_liquidity_penalty_amount_multiplier_msat = v as u64;
+      }
+      if let Some(v) = scoring.anti_probing_penalty_msat {
+        fee_params.anti_probing_penalty_msat = v as u64;
+      }
+      if let Some(v) = scoring.considered_impossible_penalty_msat {
+        fee_params.considered_impossible_penalty_msat = v as u64;
+      }
+      if let Some(v) = scoring.linear_success_probability {
+        fee_params.linear_success_probability = v;
+      }
+      if let Some(v) = scoring.probing_diversity_penalty_msat {
+        fee_params.probing_diversity_penalty_msat = v as u64;
+      }
+      if let Some(penalties) = scoring.manual_node_penalties {
+        for (node_id_str, penalty) in penalties {
+          let node_id = NodeId::from_str(&node_id_str).map_err(|e| {
+            napi::Error::from_reason(format!("Invalid node_id {}: {}", node_id_str, e))
+          })?;
+          fee_params
+            .manual_node_penalties
+            .insert(node_id, penalty as u64);
+        }
+      }
+
+      let mut decay_params = ProbabilisticScoringDecayParameters::default();
+      if let Some(v) = scoring.liquidity_offset_half_life_secs {
+        decay_params.liquidity_offset_half_life = Duration::from_secs(v as u64);
+      }
+      if let Some(v) = scoring.historical_no_updates_half_life_secs {
+        decay_params.historical_no_updates_half_life = Duration::from_secs(v as u64);
+      }
+
+      builder.set_scoring_params(ProbabilisticScoringParameters {
+        fee_params,
+        decay_params,
+      });
+    }
 
     let vss_headers = HashMap::from([(
       "Authorization".to_string(),
