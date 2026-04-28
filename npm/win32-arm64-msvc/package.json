@@ -1,6 +1,6 @@
 {
   "name": "@moneydevkit/lightning-js-win32-arm64-msvc",
-  "version": "0.1.81",
+  "version": "0.1.82",
   "os": [
     "win32"
   ],
