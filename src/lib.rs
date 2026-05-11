@@ -56,6 +56,8 @@ use tokio::runtime::Runtime;
 #[macro_use]
 extern crate napi_derive;
 
+mod splice_manager;
+
 /// Polling interval for event loops and state checks.
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
@@ -312,9 +314,9 @@ pub struct SpliceConfig {
 
 /// Resolved splice config with defaults applied. Internal.
 #[derive(Debug, Clone, Copy)]
-struct ResolvedSpliceConfig {
-  enabled: bool,
-  poll_interval: Duration,
+pub(crate) struct ResolvedSpliceConfig {
+  pub(crate) enabled: bool,
+  pub(crate) poll_interval: Duration,
 }
 
 impl ResolvedSpliceConfig {
