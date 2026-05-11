@@ -296,6 +296,44 @@ pub struct MdkNodeOptions {
   pub lsp_node_id: String,
   pub lsp_address: String,
   pub scoring_param_overrides: Option<ScoringParamOverrides>,
+  pub splice: Option<SpliceConfig>,
+}
+
+/// Configuration for the auto-splice manager. The manager wakes up every
+/// `poll_interval_secs`, reads the spendable on-chain balance, and splices it
+/// into the largest usable LSP channel when one is available.
+#[napi(object)]
+pub struct SpliceConfig {
+  /// Enable the auto-splice background manager. Default: true.
+  pub enabled: Option<bool>,
+  /// Poll interval in seconds. Default: 30.
+  pub poll_interval_secs: Option<u32>,
+}
+
+/// Resolved splice config with defaults applied. Internal.
+#[derive(Debug, Clone, Copy)]
+struct ResolvedSpliceConfig {
+  enabled: bool,
+  poll_interval: Duration,
+}
+
+impl ResolvedSpliceConfig {
+  fn from_options(cfg: Option<SpliceConfig>) -> Self {
+    let default = Self {
+      enabled: true,
+      poll_interval: Duration::from_secs(30),
+    };
+    match cfg {
+      None => default,
+      Some(c) => Self {
+        enabled: c.enabled.unwrap_or(default.enabled),
+        poll_interval: c
+          .poll_interval_secs
+          .map(|s| Duration::from_secs(s as u64))
+          .unwrap_or(default.poll_interval),
+      },
+    }
+  }
 }
 
 #[napi(object)]
@@ -367,6 +405,14 @@ pub struct NodeChannel {
 pub struct MdkNode {
   node: Option<Node>,
   network: Network,
+  /// LSP counterparty pubkey, parsed and cached from `MdkNodeOptions.lsp_node_id`.
+  /// Reused by the auto-splice manager to filter eligible channels by counterparty.
+  #[allow(dead_code)]
+  lsp_pubkey: PublicKey,
+  /// Resolved auto-splice manager configuration. Consumed when the manager is
+  /// spawned from `start_receiving()`.
+  #[allow(dead_code)]
+  splice_cfg: ResolvedSpliceConfig,
 }
 
 #[napi]
@@ -470,9 +516,13 @@ impl MdkNode {
       .build_with_vss_store_and_fixed_headers(options.vss_url, vss_identifier, vss_headers)
       .map_err(|err| napi::Error::from_reason(err.to_string()))?;
 
+    let splice_cfg = ResolvedSpliceConfig::from_options(options.splice);
+
     Ok(Self {
       node: Some(node),
       network,
+      lsp_pubkey: lsp_node_id,
+      splice_cfg,
     })
   }
 

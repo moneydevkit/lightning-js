@@ -40,6 +40,18 @@ export interface MdkNodeOptions {
   lspNodeId: string
   lspAddress: string
   scoringParamOverrides?: ScoringParamOverrides
+  splice?: SpliceConfig
+}
+/**
+ * Configuration for the auto-splice manager. The manager wakes up every
+ * `poll_interval_secs`, reads the spendable on-chain balance, and splices it
+ * into the largest usable LSP channel when one is available.
+ */
+export interface SpliceConfig {
+  /** Enable the auto-splice background manager. Default: true. */
+  enabled?: boolean
+  /** Poll interval in seconds. Default: 30. */
+  pollIntervalSecs?: number
 }
 export interface PaymentMetadata {
   bolt11: string
