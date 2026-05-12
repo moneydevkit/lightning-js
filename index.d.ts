@@ -119,7 +119,13 @@ export declare class MdkNode {
   getNodeId(): string
   start(): void
   stop(): void
-  /** Start the node and sync wallets. Call once before polling for events. */
+  /**
+   * Start the node and sync wallets. Call once before polling for events.
+   *
+   * If `splice.enabled` is set on construction (the default), also spawns
+   * the auto-splice background task on the dedicated splice runtime. The
+   * task is torn down by `stop_receiving` (or `destroy`).
+   */
   startReceiving(): void
   /**
    * Get the next payment event without ACKing it.
@@ -132,7 +138,13 @@ export declare class MdkNode {
    * Must be called after next_event() returns an event, before calling next_event() again.
    */
   ackEvent(): void
-  /** Stop the node. Call when done polling. */
+  /**
+   * Stop the node. Call when done polling.
+   *
+   * Cancels the auto-splice task (if running) and blocks until it exits
+   * before stopping the node, so the splice loop never observes a stopped
+   * node mid-tick.
+   */
   stopReceiving(): void
   syncWallets(): void
   getBalance(): number

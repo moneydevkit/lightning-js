@@ -11,8 +11,6 @@
 //!   * no event emission — splice activity is silent, diagnostics go to stderr
 //!     with the existing `[lightning-js]` prefix.
 
-#![allow(dead_code)] // Wired in commit 3.
-
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
