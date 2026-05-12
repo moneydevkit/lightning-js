@@ -1,15 +1,10 @@
-//! Auto-splice manager: a background task that, when the node holds confirmed
-//! on-chain funds AND has a usable LSP channel, splices the on-chain balance
-//! into the largest such channel. Consolidates liquidity that would otherwise
-//! sit idle after a JIT channel closes and a fresh JIT channel opens for the
-//! same wallet.
+//! Background task that splices confirmed on-chain funds into the largest
+//! usable LSP channel. Consolidates liquidity that would otherwise sit idle
+//! after one JIT channel closes and a fresh one opens for the same wallet.
 //!
-//! Ported from `mdkd::mdk::splice_manager`. The pure decision logic (`decide`,
-//! `advance_in_flight`) is identical to the source; the effectful shell is
-//! adapted to lightning-js conventions:
-//!   * no `MdkClient` — takes `Arc<Node>` + `PublicKey` (LSP) directly;
-//!   * no event emission — splice activity is silent, diagnostics go to stderr
-//!     with the existing `[lightning-js]` prefix.
+//! Ported from `mdkd::mdk::splice_manager`. `decide` and `advance_in_flight`
+//! are byte-identical; the effectful shell takes `Arc<Node>` + LSP pubkey
+//! directly (no `MdkClient`) and logs to stderr instead of emitting events.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -24,32 +19,22 @@ use tokio_util::sync::CancellationToken;
 
 use crate::ResolvedSpliceConfig;
 
-/// Once a splice has been promoted (both sides exchanged `splice_locked` and
-/// `ChannelDetails::funding_txo` flips to the new outpoint), we keep the
-/// channel out of the candidate pool for this long. ldk-node's background
-/// `continuously_sync_wallets` task reruns every ~60s; inside that window
-/// `list_balances().spendable_onchain_balance_sats` still reports the
-/// pre-splice value (BDK has not yet picked up that the UTXO is spent), so a
-/// tick that lands here would happily re-fire on the same UTXO. This grace
-/// period bridges the gap between promotion and the next BDK sync.
+/// After a splice promotes (funding_txo flips), BDK's wallet sync still
+/// reports the pre-splice balance for up to ~60s. Hold the channel out of
+/// the candidate pool for this long to avoid re-firing on the same UTXO.
 const BDK_RESYNC_GRACE: Duration = Duration::from_secs(60);
 
-/// Typed splice failure modes. Modeled as an ADT so the apply layer can
-/// pattern-match on the failure mode without inspecting strings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SpliceError {
-  /// The target channel exists but is not currently usable (mid-splice, peer
-  /// disconnected, mid-monitor-update). Skip this tick and try again.
+  /// Channel exists but isn't usable right now (mid-splice, peer down,
+  /// mid-monitor-update). Retry next tick.
   ChannelNotUsable,
-  /// BDK selection failed because the post-fee result is below the dust
-  /// limit. Same retry semantics as `ChannelNotUsable`.
+  /// Post-fee splice amount is below dust. Retry next tick.
   InsufficientFunds,
-  /// Catch-all for any other `NodeError` returned by `Node::splice_in`.
+  /// Any other `NodeError` from `Node::splice_in`.
   Rejected,
 }
 
-/// `NodeError::InsufficientFunds` is the one case the splice manager treats
-/// specially (silent retry). Everything else collapses to `Rejected`.
 fn map_splice_error(e: NodeError) -> SpliceError {
   match e {
     NodeError::InsufficientFunds => SpliceError::InsufficientFunds,
@@ -116,18 +101,9 @@ fn tick(node: &Node, lsp_pubkey: PublicKey, in_flight: &mut HashMap<u128, InFlig
   }
 }
 
-/// Advance the in-flight state machine for each tracked splice:
-///
-/// * If the channel is gone (force-closed mid-splice, etc.), drop the entry —
-///   there is nothing to splice into anymore.
-/// * If the channel's `funding_txo` still equals the one captured when
-///   `splice_in` returned `Ok`, the splice is still negotiating or awaiting
-///   the LSP's `splice_locked` (which is gated on
-///   `inbound_splice_minimum_depth` confirmations). Keep the entry.
-/// * Once `funding_txo` flips, both sides have exchanged `splice_locked` and
-///   rust-lightning has swapped the active funding scope. Stamp `promoted_at`
-///   on the first observation and drop the entry once `BDK_RESYNC_GRACE` has
-///   elapsed, by which point BDK's wallet sync should reflect the spent UTXO.
+/// Advance each tracked splice. Drop entries whose channel disappeared; keep
+/// entries whose `funding_txo` is unchanged (splice still negotiating); stamp
+/// `promoted_at` when `funding_txo` flips and drop after `BDK_RESYNC_GRACE`.
 fn advance_in_flight(
   in_flight: &mut HashMap<u128, InFlight>,
   channels: &[ChannelCandidate],
@@ -152,8 +128,7 @@ fn advance_in_flight(
   });
 }
 
-/// Pure decision: given a snapshot of the world, what should the splice
-/// manager do this tick?
+/// Pure decision over a tick's snapshot.
 fn decide(
   onchain_balance_sats: u64,
   channels: &[ChannelCandidate],
@@ -164,9 +139,8 @@ fn decide(
     return SpliceDecision::Skip(SkipReason::NoOnchainBalance);
   }
 
-  // Always splice into the largest LSP channel — concentrating liquidity is
-  // the whole point. If that single channel is mid-splice, skip the tick
-  // rather than fragmenting funds into a smaller one.
+  // Largest LSP channel only. Fragmenting into a smaller one when the
+  // largest is mid-splice would defeat the consolidation goal.
   let Some((channel, funding_txo)) = channels
     .iter()
     .filter(|c| c.counterparty == *lsp_pubkey && c.is_usable)
@@ -190,11 +164,9 @@ fn decide(
   })
 }
 
-/// Apply a decision: log, query the maximum splice amount from the node
-/// (which runs a dry-run BDK selection at the live channel funding feerate),
-/// call `splice_in`. Returns `(user_channel_id, funding_txo)` when a splice
-/// was successfully initiated, so the caller can seed the in-flight state
-/// machine with the funding outpoint that was active at splice time.
+/// Effectful: log, size the splice via `get_max_splice_in_amount`, call
+/// `splice_in`. Returns `(ucid, funding_txo)` on success so the caller can
+/// seed the in-flight entry with the pre-splice funding outpoint.
 fn apply(
   node: &Node,
   lsp_pubkey: PublicKey,
@@ -226,9 +198,7 @@ fn apply(
       let amount_sats = match node.get_max_splice_in_amount(&user_channel_id, lsp_pubkey) {
         Ok(a) => a,
         Err(e) => {
-          // Insufficient confirmed UTXOs (post-fee result is dust) is the
-          // common case after a small force-close sweep arrives — log and
-          // retry next tick.
+          // Common case: post-fee amount is dust. Retry next tick.
           eprintln!(
             "[lightning-js] Splice manager: get_max_splice_in_amount failed on channel {channel_id}: {e}; will retry"
           );
@@ -261,8 +231,7 @@ fn apply(
   }
 }
 
-/// Effectful: pre-flight `is_usable` check then delegate to ldk-node. Mirrors
-/// `MdkClient::splice_in` from the mdkd source.
+/// Pre-flight `is_usable` check, then delegate to ldk-node.
 fn perform_splice(
   node: &Node,
   lsp_pubkey: PublicKey,
@@ -282,9 +251,8 @@ fn perform_splice(
     .map_err(map_splice_error)
 }
 
-/// Minimal projection of `ChannelDetails` carrying only the fields the splice
-/// manager's decision logic needs. Decoupling the pure decision from
-/// `ChannelDetails` keeps the unit tests free of LDK type construction.
+/// Projection of `ChannelDetails` carrying only what `decide` needs. Keeps
+/// unit tests free of LDK type construction.
 #[derive(Debug, Clone)]
 struct ChannelCandidate {
   user_channel_id: UserChannelId,
@@ -308,8 +276,7 @@ impl From<&ChannelDetails> for ChannelCandidate {
   }
 }
 
-/// State-machine entry tracking a splice the manager initiated. See
-/// [`advance_in_flight`] for how `promoted_at` transitions.
+/// In-flight entry. See [`advance_in_flight`] for the `promoted_at` semantics.
 #[derive(Debug, Clone)]
 struct InFlight {
   initial_funding_txo: OutPoint,
@@ -351,8 +318,6 @@ mod tests {
     PublicKey::from_str("02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5").unwrap()
   }
 
-  /// Build a deterministic `OutPoint` from a single byte so tests can express
-  /// "old funding" vs "new funding" without dragging in real txid construction.
   fn txo(seed: u8) -> OutPoint {
     OutPoint {
       txid: Txid::from_byte_array([seed; 32]),

@@ -123,8 +123,7 @@ export declare class MdkNode {
    * Start the node and sync wallets. Call once before polling for events.
    *
    * If `splice.enabled` is set on construction (the default), also spawns
-   * the auto-splice background task on the dedicated splice runtime. The
-   * task is torn down by `stop_receiving` (or `destroy`).
+   * the auto-splice background task on the dedicated splice runtime.
    */
   startReceiving(): void
   /**
@@ -141,9 +140,8 @@ export declare class MdkNode {
   /**
    * Stop the node. Call when done polling.
    *
-   * Cancels the auto-splice task (if running) and blocks until it exits
-   * before stopping the node, so the splice loop never observes a stopped
-   * node mid-tick.
+   * Tears down the splice manager before stopping the node so the loop
+   * never sees a stopped node mid-tick.
    */
   stopReceiving(): void
   syncWallets(): void
