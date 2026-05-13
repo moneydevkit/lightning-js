@@ -333,7 +333,7 @@ impl ResolvedSpliceConfig {
         enabled: c.enabled.unwrap_or(default.enabled),
         poll_interval: c
           .poll_interval_secs
-          .map(|s| Duration::from_secs(s as u64))
+          .map(|s| Duration::from_secs(s.max(1) as u64))
           .unwrap_or(default.poll_interval),
       },
     }
@@ -533,9 +533,7 @@ impl MdkNode {
       .thread_name("mdk-splice")
       .enable_all()
       .build()
-      .map_err(|e| {
-        napi::Error::from_reason(format!("failed to build splice runtime: {e}"))
-      })?;
+      .map_err(|e| napi::Error::from_reason(format!("failed to build splice runtime: {e}")))?;
 
     Ok(Self {
       node: Some(Arc::new(node)),
@@ -612,6 +610,7 @@ impl MdkNode {
 
   #[napi]
   pub fn stop(&self) {
+    self.shutdown_splice_task();
     if let Err(err) = self.node().stop() {
       eprintln!("[lightning-js] Failed to stop node via stop(): {err}");
       panic!("failed to stop node: {err}");
