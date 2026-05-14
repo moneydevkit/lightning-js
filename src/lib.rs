@@ -58,6 +58,7 @@ use tokio_util::sync::CancellationToken;
 #[macro_use]
 extern crate napi_derive;
 
+mod max_sendable;
 mod splice_manager;
 
 /// Polling interval for event loops and state checks.
