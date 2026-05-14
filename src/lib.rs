@@ -13,7 +13,7 @@ use std::{
   fmt::Write,
   str::FromStr,
   sync::{
-    Arc, OnceLock, RwLock,
+    Arc, Mutex, OnceLock, RwLock,
     atomic::{AtomicU8, Ordering},
   },
   time::{Duration, Instant},
@@ -52,9 +52,13 @@ use ldk_node::{
   payment::PaymentKind,
 };
 use tokio::runtime::Runtime;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 #[macro_use]
 extern crate napi_derive;
+
+mod splice_manager;
 
 /// Polling interval for event loops and state checks.
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -296,6 +300,44 @@ pub struct MdkNodeOptions {
   pub lsp_node_id: String,
   pub lsp_address: String,
   pub scoring_param_overrides: Option<ScoringParamOverrides>,
+  pub splice: Option<SpliceConfig>,
+}
+
+/// Configuration for the auto-splice manager. The manager wakes up every
+/// `poll_interval_secs`, reads the spendable on-chain balance, and splices it
+/// into the largest usable LSP channel when one is available.
+#[napi(object)]
+pub struct SpliceConfig {
+  /// Enable the auto-splice background manager. Default: true.
+  pub enabled: Option<bool>,
+  /// Poll interval in seconds. Default: 30.
+  pub poll_interval_secs: Option<u32>,
+}
+
+/// Resolved splice config with defaults applied. Internal.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ResolvedSpliceConfig {
+  pub(crate) enabled: bool,
+  pub(crate) poll_interval: Duration,
+}
+
+impl ResolvedSpliceConfig {
+  fn from_options(cfg: Option<SpliceConfig>) -> Self {
+    let default = Self {
+      enabled: true,
+      poll_interval: Duration::from_secs(30),
+    };
+    match cfg {
+      None => default,
+      Some(c) => Self {
+        enabled: c.enabled.unwrap_or(default.enabled),
+        poll_interval: c
+          .poll_interval_secs
+          .map(|s| Duration::from_secs(s.max(1) as u64))
+          .unwrap_or(default.poll_interval),
+      },
+    }
+  }
 }
 
 #[napi(object)]
@@ -365,8 +407,21 @@ pub struct NodeChannel {
 
 #[napi]
 pub struct MdkNode {
-  node: Option<Node>,
+  node: Option<Arc<Node>>,
   network: Network,
+  /// Cached LSP pubkey. Used by the splice manager to filter eligible
+  /// channels by counterparty.
+  lsp_pubkey: PublicKey,
+  splice_cfg: ResolvedSpliceConfig,
+  /// One-worker tokio runtime dedicated to the splice manager.
+  splice_runtime: Runtime,
+  /// `Some` while a splice manager is running, `None` otherwise.
+  splice_task: Mutex<Option<SpliceTask>>,
+}
+
+struct SpliceTask {
+  shutdown: CancellationToken,
+  join: JoinHandle<()>,
 }
 
 #[napi]
@@ -470,15 +525,52 @@ impl MdkNode {
       .build_with_vss_store_and_fixed_headers(options.vss_url, vss_identifier, vss_headers)
       .map_err(|err| napi::Error::from_reason(err.to_string()))?;
 
+    let splice_cfg = ResolvedSpliceConfig::from_options(options.splice);
+
+    // One self-driving worker is enough; the manager sleeps between ticks.
+    let splice_runtime = tokio::runtime::Builder::new_multi_thread()
+      .worker_threads(1)
+      .thread_name("mdk-splice")
+      .enable_all()
+      .build()
+      .map_err(|e| napi::Error::from_reason(format!("failed to build splice runtime: {e}")))?;
+
     Ok(Self {
-      node: Some(node),
+      node: Some(Arc::new(node)),
       network,
+      lsp_pubkey: lsp_node_id,
+      splice_cfg,
+      splice_runtime,
+      splice_task: Mutex::new(None),
     })
   }
 
   /// Get a reference to the inner Node, panicking if already destroyed.
   fn node(&self) -> &Node {
     self.node.as_ref().expect("MdkNode has been destroyed")
+  }
+
+  /// Clone the inner `Arc<Node>` for handing to background tasks. Panics if
+  /// the node has been destroyed.
+  fn node_arc(&self) -> Arc<Node> {
+    Arc::clone(self.node.as_ref().expect("MdkNode has been destroyed"))
+  }
+
+  /// Cancel the splice task (if any) and block until it exits.
+  ///
+  /// Bounded by however long the in-flight `tick()` takes to return — usually
+  /// trivial, but a tick mid-`splice_in` is blocked on an LSP round-trip.
+  ///
+  /// Must be called from a non-tokio context (JS thread is fine);
+  /// `block_on` panics from inside a runtime.
+  fn shutdown_splice_task(&self) {
+    let task = self.splice_task.lock().unwrap().take();
+    if let Some(SpliceTask { shutdown, join }) = task {
+      shutdown.cancel();
+      if let Err(e) = self.splice_runtime.block_on(join) {
+        eprintln!("[lightning-js] Splice task ended abnormally: {e}");
+      }
+    }
   }
 
   /// Destroy the node, dropping the inner Rust Node and its tokio runtime immediately.
@@ -492,6 +584,9 @@ impl MdkNode {
   /// them and sending a webhook.
   #[napi]
   pub fn destroy(&mut self) -> napi::Result<()> {
+    // Drop the splice task first so its Arc<Node> is released before we drop
+    // the inner Node.
+    self.shutdown_splice_task();
     if let Some(node) = self.node.take() {
       node.disconnect_all_peers();
       let _ = node.stop();
@@ -515,6 +610,7 @@ impl MdkNode {
 
   #[napi]
   pub fn stop(&self) {
+    self.shutdown_splice_task();
     if let Err(err) = self.node().stop() {
       eprintln!("[lightning-js] Failed to stop node via stop(): {err}");
       panic!("failed to stop node: {err}");
@@ -522,6 +618,9 @@ impl MdkNode {
   }
 
   /// Start the node and sync wallets. Call once before polling for events.
+  ///
+  /// If `splice.enabled` is set on construction (the default), also spawns
+  /// the auto-splice background task on the dedicated splice runtime.
   #[napi]
   pub fn start_receiving(&self) -> napi::Result<()> {
     self.node().start().map_err(|e| {
@@ -533,7 +632,24 @@ impl MdkNode {
       eprintln!("[lightning-js] Failed to sync wallets in start_receiving: {e}");
       let _ = self.node().stop();
       napi::Error::from_reason(format!("Failed to sync: {e}"))
-    })
+    })?;
+
+    if self.splice_cfg.enabled {
+      // Defensive: if a prior session leaked a task (or start_receiving is
+      // double-invoked), cancel + join the previous one before spawning.
+      self.shutdown_splice_task();
+      let shutdown = CancellationToken::new();
+      let join = splice_manager::spawn(
+        self.node_arc(),
+        self.lsp_pubkey,
+        self.splice_cfg,
+        shutdown.clone(),
+        self.splice_runtime.handle(),
+      );
+      *self.splice_task.lock().unwrap() = Some(SpliceTask { shutdown, join });
+    }
+
+    Ok(())
   }
 
   /// Get the next payment event without ACKing it.
@@ -645,8 +761,12 @@ impl MdkNode {
   }
 
   /// Stop the node. Call when done polling.
+  ///
+  /// Tears down the splice manager before stopping the node so the loop
+  /// never sees a stopped node mid-tick.
   #[napi]
   pub fn stop_receiving(&self) -> napi::Result<()> {
+    self.shutdown_splice_task();
     self
       .node()
       .stop()

@@ -40,6 +40,18 @@ export interface MdkNodeOptions {
   lspNodeId: string
   lspAddress: string
   scoringParamOverrides?: ScoringParamOverrides
+  splice?: SpliceConfig
+}
+/**
+ * Configuration for the auto-splice manager. The manager wakes up every
+ * `poll_interval_secs`, reads the spendable on-chain balance, and splices it
+ * into the largest usable LSP channel when one is available.
+ */
+export interface SpliceConfig {
+  /** Enable the auto-splice background manager. Default: true. */
+  enabled?: boolean
+  /** Poll interval in seconds. Default: 30. */
+  pollIntervalSecs?: number
 }
 export interface PaymentMetadata {
   bolt11: string
@@ -107,7 +119,12 @@ export declare class MdkNode {
   getNodeId(): string
   start(): void
   stop(): void
-  /** Start the node and sync wallets. Call once before polling for events. */
+  /**
+   * Start the node and sync wallets. Call once before polling for events.
+   *
+   * If `splice.enabled` is set on construction (the default), also spawns
+   * the auto-splice background task on the dedicated splice runtime.
+   */
   startReceiving(): void
   /**
    * Get the next payment event without ACKing it.
@@ -120,7 +137,12 @@ export declare class MdkNode {
    * Must be called after next_event() returns an event, before calling next_event() again.
    */
   ackEvent(): void
-  /** Stop the node. Call when done polling. */
+  /**
+   * Stop the node. Call when done polling.
+   *
+   * Tears down the splice manager before stopping the node so the loop
+   * never sees a stopped node mid-tick.
+   */
   stopReceiving(): void
   syncWallets(): void
   getBalance(): number
