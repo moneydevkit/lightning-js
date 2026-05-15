@@ -353,6 +353,7 @@ const DEFAULT_FEE_BUFFER_FLOOR_SATS: u64 = 10;
 /// buffer from the raw outbound liquidity so consumers don't try to spend
 /// `getBalance()` worth and watch it fail to route.
 #[napi(object)]
+#[derive(Default)]
 pub struct MaxSendableConfig {
   /// Percentage buffer in basis points (1 bps = 0.01 %). Default: 100 (1 %).
   pub fee_buffer_bps: Option<u32>,
@@ -375,15 +376,6 @@ impl MaxSendableConfig {
       .map(|v| v.max(0) as u64)
       .unwrap_or(DEFAULT_FEE_BUFFER_FLOOR_SATS);
     (bps, floor_sats)
-  }
-}
-
-impl Default for MaxSendableConfig {
-  fn default() -> Self {
-    Self {
-      fee_buffer_bps: None,
-      fee_buffer_floor_sats: None,
-    }
   }
 }
 

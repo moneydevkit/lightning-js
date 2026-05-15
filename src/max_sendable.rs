@@ -100,11 +100,13 @@ mod tests {
   const FLOOR: u64 = 10;
 
   fn lsp() -> PublicKey {
-    PublicKey::from_str("0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798").unwrap()
+    PublicKey::from_str("0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798")
+      .unwrap()
   }
 
   fn other_peer() -> PublicKey {
-    PublicKey::from_str("02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5").unwrap()
+    PublicKey::from_str("02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5")
+      .unwrap()
   }
 
   fn snap(counterparty: PublicKey, is_usable: bool, limit_msat: u64) -> ChannelSnapshot {
