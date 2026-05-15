@@ -452,6 +452,18 @@ pub struct NodeChannel {
   pub is_public: bool,
 }
 
+/// Best-effort estimate of the largest amount that can flow out over
+/// Lightning right now, with routing-fee headroom subtracted.
+#[napi(object)]
+pub struct MaxSendableEstimate {
+  /// Amount to surface to the payer as "max sendable", in msat. Zero
+  /// when the balance is fully consumed by the buffer (dust).
+  pub amount_msat: i64,
+  /// The buffer subtracted from the raw outbound liquidity to reach
+  /// `amount_msat`. Doubles as a hint for `max_total_routing_fee_msat`.
+  pub fee_budget_msat: i64,
+}
+
 #[napi]
 pub struct MdkNode {
   node: Option<Arc<Node>>,
@@ -931,6 +943,34 @@ impl MdkNode {
         }
       })
       .collect()
+  }
+
+  /// Best-effort estimate of the largest amount that can flow out over
+  /// Lightning right now, with routing-fee headroom subtracted.
+  ///
+  /// Returns `null` when no usable LSP channel exists. `Some(amountMsat: 0)`
+  /// is distinct from `null` — it means a channel exists but the balance
+  /// is fully consumed by the fee buffer (dust). Consumers should never
+  /// see a positive `getBalance()` paired with a `null` here: both
+  /// project from the same `list_channels()` snapshot inside a single
+  /// call.
+  ///
+  /// Read-only; safe to call whether or not the node has been started.
+  #[napi]
+  pub fn get_max_sendable(&self) -> Option<MaxSendableEstimate> {
+    let snaps: Vec<max_sendable::ChannelSnapshot> = self
+      .node()
+      .list_channels()
+      .iter()
+      .map(max_sendable::ChannelSnapshot::from)
+      .collect();
+    let (bps, floor_sats) = self.max_sendable_cfg.resolve();
+    max_sendable::compute_estimate(&snaps, &self.lsp_pubkey, bps, floor_sats)
+      .ok()
+      .map(|e| MaxSendableEstimate {
+        amount_msat: u64_to_i64(e.amount_msat),
+        fee_budget_msat: u64_to_i64(e.fee_budget_msat),
+      })
   }
 
   /// Manually sync the RGS snapshot.
