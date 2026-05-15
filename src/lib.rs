@@ -302,6 +302,7 @@ pub struct MdkNodeOptions {
   pub lsp_address: String,
   pub scoring_param_overrides: Option<ScoringParamOverrides>,
   pub splice: Option<SpliceConfig>,
+  pub max_sendable: Option<MaxSendableConfig>,
 }
 
 /// Configuration for the auto-splice manager. The manager wakes up every
@@ -337,6 +338,51 @@ impl ResolvedSpliceConfig {
           .map(|s| Duration::from_secs(s.max(1) as u64))
           .unwrap_or(default.poll_interval),
       },
+    }
+  }
+}
+
+/// Default percentage buffer (in basis points) applied when the caller
+/// leaves `fee_buffer_bps` unset on [`MaxSendableConfig`]. 100 bps = 1 %.
+const DEFAULT_FEE_BUFFER_BPS: u16 = 100;
+/// Default floor (in sats) on the buffer when the caller leaves
+/// `fee_buffer_floor_sats` unset on [`MaxSendableConfig`].
+const DEFAULT_FEE_BUFFER_FLOOR_SATS: u64 = 10;
+
+/// Configuration for the max-sendable estimator. Subtracts a routing-fee
+/// buffer from the raw outbound liquidity so consumers don't try to spend
+/// `getBalance()` worth and watch it fail to route.
+#[napi(object)]
+pub struct MaxSendableConfig {
+  /// Percentage buffer in basis points (1 bps = 0.01 %). Default: 100 (1 %).
+  pub fee_buffer_bps: Option<u32>,
+  /// Absolute lower bound on the buffer, in sats. Default: 10.
+  pub fee_buffer_floor_sats: Option<i64>,
+}
+
+impl MaxSendableConfig {
+  /// Resolve the napi-shaped optional/wider-typed config into the
+  /// `(bps, floor_sats)` pair that `max_sendable::compute_estimate`
+  /// consumes. Bad input from JS (negative floor, bps > `u16::MAX`)
+  /// gets clamped silently
+  fn resolve(&self) -> (u16, u64) {
+    let bps = self
+      .fee_buffer_bps
+      .map(|v| v.min(u16::MAX as u32) as u16)
+      .unwrap_or(DEFAULT_FEE_BUFFER_BPS);
+    let floor_sats = self
+      .fee_buffer_floor_sats
+      .map(|v| v.max(0) as u64)
+      .unwrap_or(DEFAULT_FEE_BUFFER_FLOOR_SATS);
+    (bps, floor_sats)
+  }
+}
+
+impl Default for MaxSendableConfig {
+  fn default() -> Self {
+    Self {
+      fee_buffer_bps: None,
+      fee_buffer_floor_sats: None,
     }
   }
 }
@@ -414,6 +460,7 @@ pub struct MdkNode {
   /// channels by counterparty.
   lsp_pubkey: PublicKey,
   splice_cfg: ResolvedSpliceConfig,
+  max_sendable_cfg: MaxSendableConfig,
   /// One-worker tokio runtime dedicated to the splice manager.
   splice_runtime: Runtime,
   /// `Some` while a splice manager is running, `None` otherwise.
@@ -527,6 +574,7 @@ impl MdkNode {
       .map_err(|err| napi::Error::from_reason(err.to_string()))?;
 
     let splice_cfg = ResolvedSpliceConfig::from_options(options.splice);
+    let max_sendable_cfg = options.max_sendable.unwrap_or_default();
 
     // One self-driving worker is enough; the manager sleeps between ticks.
     let splice_runtime = tokio::runtime::Builder::new_multi_thread()
@@ -541,6 +589,7 @@ impl MdkNode {
       network,
       lsp_pubkey: lsp_node_id,
       splice_cfg,
+      max_sendable_cfg,
       splice_runtime,
       splice_task: Mutex::new(None),
     })
