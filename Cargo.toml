@@ -11,7 +11,10 @@ crate-type = ["cdylib"]
 tikv-jemallocator = { version = "0.6", features = ["disable_initial_exec_tls"] }
 
 [dependencies]
-bitcoin-payment-instructions = { version = "0.5.0", default-features = false, features = [
+# Branch: https://github.com/moneydevkit/bitcoin-payment-instructions/tree/2025-12-ldk-node-base
+# Pinned to the same git rev as ldk-node's transitive pull to avoid duplicate
+# crate compilation. Verify with `cargo tree -d | grep bitcoin-payment-instructions`.
+bitcoin-payment-instructions = { git = "https://github.com/moneydevkit/bitcoin-payment-instructions", rev = "bc7d03f", default-features = false, features = [
   "http",
 ] }
 # Branch: https://github.com/moneydevkit/ldk-node/commits/lsp-0.7.0_accept-underpaying-htlcs_with_timing_logs
