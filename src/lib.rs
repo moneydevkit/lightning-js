@@ -58,6 +58,7 @@ use tokio_util::sync::CancellationToken;
 #[macro_use]
 extern crate napi_derive;
 
+mod max_sendable;
 mod splice_manager;
 
 /// Polling interval for event loops and state checks.
@@ -301,6 +302,7 @@ pub struct MdkNodeOptions {
   pub lsp_address: String,
   pub scoring_param_overrides: Option<ScoringParamOverrides>,
   pub splice: Option<SpliceConfig>,
+  pub max_sendable: Option<MaxSendableConfig>,
 }
 
 /// Configuration for the auto-splice manager. The manager wakes up every
@@ -337,6 +339,43 @@ impl ResolvedSpliceConfig {
           .unwrap_or(default.poll_interval),
       },
     }
+  }
+}
+
+/// Default percentage buffer (in basis points) applied when the caller
+/// leaves `fee_buffer_bps` unset on [`MaxSendableConfig`]. 100 bps = 1 %.
+const DEFAULT_FEE_BUFFER_BPS: u16 = 100;
+/// Default floor (in sats) on the buffer when the caller leaves
+/// `fee_buffer_floor_sats` unset on [`MaxSendableConfig`].
+const DEFAULT_FEE_BUFFER_FLOOR_SATS: u64 = 10;
+
+/// Configuration for the max-sendable estimator. Subtracts a routing-fee
+/// buffer from the raw outbound liquidity so consumers don't try to spend
+/// `getBalance()` worth and watch it fail to route.
+#[napi(object)]
+#[derive(Default)]
+pub struct MaxSendableConfig {
+  /// Percentage buffer in basis points (1 bps = 0.01 %). Default: 100 (1 %).
+  pub fee_buffer_bps: Option<u32>,
+  /// Absolute lower bound on the buffer, in sats. Default: 10.
+  pub fee_buffer_floor_sats: Option<i64>,
+}
+
+impl MaxSendableConfig {
+  /// Resolve the napi-shaped optional/wider-typed config into the
+  /// `(bps, floor_sats)` pair that `max_sendable::compute_estimate`
+  /// consumes. Bad input from JS (negative floor, bps > `u16::MAX`)
+  /// gets clamped silently
+  fn resolve(&self) -> (u16, u64) {
+    let bps = self
+      .fee_buffer_bps
+      .map(|v| v.min(u16::MAX as u32) as u16)
+      .unwrap_or(DEFAULT_FEE_BUFFER_BPS);
+    let floor_sats = self
+      .fee_buffer_floor_sats
+      .map(|v| v.max(0) as u64)
+      .unwrap_or(DEFAULT_FEE_BUFFER_FLOOR_SATS);
+    (bps, floor_sats)
   }
 }
 
@@ -405,6 +444,18 @@ pub struct NodeChannel {
   pub is_public: bool,
 }
 
+/// Best-effort estimate of the largest amount that can flow out over
+/// Lightning right now, with routing-fee headroom subtracted.
+#[napi(object)]
+pub struct MaxSendableEstimate {
+  /// Amount to surface to the payer as "max sendable", in msat. Zero
+  /// when the balance is fully consumed by the buffer (dust).
+  pub amount_msat: i64,
+  /// The buffer subtracted from the raw outbound liquidity to reach
+  /// `amount_msat`. Doubles as a hint for `max_total_routing_fee_msat`.
+  pub fee_budget_msat: i64,
+}
+
 #[napi]
 pub struct MdkNode {
   node: Option<Arc<Node>>,
@@ -413,6 +464,7 @@ pub struct MdkNode {
   /// channels by counterparty.
   lsp_pubkey: PublicKey,
   splice_cfg: ResolvedSpliceConfig,
+  max_sendable_cfg: MaxSendableConfig,
   /// One-worker tokio runtime dedicated to the splice manager.
   splice_runtime: Runtime,
   /// `Some` while a splice manager is running, `None` otherwise.
@@ -526,6 +578,7 @@ impl MdkNode {
       .map_err(|err| napi::Error::from_reason(err.to_string()))?;
 
     let splice_cfg = ResolvedSpliceConfig::from_options(options.splice);
+    let max_sendable_cfg = options.max_sendable.unwrap_or_default();
 
     // One self-driving worker is enough; the manager sleeps between ticks.
     let splice_runtime = tokio::runtime::Builder::new_multi_thread()
@@ -540,6 +593,7 @@ impl MdkNode {
       network,
       lsp_pubkey: lsp_node_id,
       splice_cfg,
+      max_sendable_cfg,
       splice_runtime,
       splice_task: Mutex::new(None),
     })
@@ -881,6 +935,34 @@ impl MdkNode {
         }
       })
       .collect()
+  }
+
+  /// Best-effort estimate of the largest amount that can flow out over
+  /// Lightning right now, with routing-fee headroom subtracted.
+  ///
+  /// Returns `null` when no usable LSP channel exists. `Some(amountMsat: 0)`
+  /// is distinct from `null` — it means a channel exists but the balance
+  /// is fully consumed by the fee buffer (dust). Consumers should never
+  /// see a positive `getBalance()` paired with a `null` here: both
+  /// project from the same `list_channels()` snapshot inside a single
+  /// call.
+  ///
+  /// Read-only; safe to call whether or not the node has been started.
+  #[napi]
+  pub fn get_max_sendable(&self) -> Option<MaxSendableEstimate> {
+    let snaps: Vec<max_sendable::ChannelSnapshot> = self
+      .node()
+      .list_channels()
+      .iter()
+      .map(max_sendable::ChannelSnapshot::from)
+      .collect();
+    let (bps, floor_sats) = self.max_sendable_cfg.resolve();
+    max_sendable::compute_estimate(&snaps, &self.lsp_pubkey, bps, floor_sats)
+      .ok()
+      .map(|e| MaxSendableEstimate {
+        amount_msat: u64_to_i64(e.amount_msat),
+        fee_budget_msat: u64_to_i64(e.fee_budget_msat),
+      })
   }
 
   /// Manually sync the RGS snapshot.

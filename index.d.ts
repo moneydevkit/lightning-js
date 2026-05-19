@@ -41,6 +41,7 @@ export interface MdkNodeOptions {
   lspAddress: string
   scoringParamOverrides?: ScoringParamOverrides
   splice?: SpliceConfig
+  maxSendable?: MaxSendableConfig
 }
 /**
  * Configuration for the auto-splice manager. The manager wakes up every
@@ -52,6 +53,17 @@ export interface SpliceConfig {
   enabled?: boolean
   /** Poll interval in seconds. Default: 30. */
   pollIntervalSecs?: number
+}
+/**
+ * Configuration for the max-sendable estimator. Subtracts a routing-fee
+ * buffer from the raw outbound liquidity so consumers don't try to spend
+ * `getBalance()` worth and watch it fail to route.
+ */
+export interface MaxSendableConfig {
+  /** Percentage buffer in basis points (1 bps = 0.01 %). Default: 100 (1 %). */
+  feeBufferBps?: number
+  /** Absolute lower bound on the buffer, in sats. Default: 10. */
+  feeBufferFloorSats?: number
 }
 export interface PaymentMetadata {
   bolt11: string
@@ -101,6 +113,22 @@ export interface NodeChannel {
   isChannelReady: boolean
   isUsable: boolean
   isPublic: boolean
+}
+/**
+ * Best-effort estimate of the largest amount that can flow out over
+ * Lightning right now, with routing-fee headroom subtracted.
+ */
+export interface MaxSendableEstimate {
+  /**
+   * Amount to surface to the payer as "max sendable", in msat. Zero
+   * when the balance is fully consumed by the buffer (dust).
+   */
+  amountMsat: number
+  /**
+   * The buffer subtracted from the raw outbound liquidity to reach
+   * `amount_msat`. Doubles as a hint for `max_total_routing_fee_msat`.
+   */
+  feeBudgetMsat: number
 }
 export declare class MdkNode {
   constructor(options: MdkNodeOptions)
@@ -152,6 +180,20 @@ export declare class MdkNode {
    */
   getBalanceWhileRunning(): number
   listChannels(): Array<NodeChannel>
+  /**
+   * Best-effort estimate of the largest amount that can flow out over
+   * Lightning right now, with routing-fee headroom subtracted.
+   *
+   * Returns `null` when no usable LSP channel exists. `Some(amountMsat: 0)`
+   * is distinct from `null` — it means a channel exists but the balance
+   * is fully consumed by the fee buffer (dust). Consumers should never
+   * see a positive `getBalance()` paired with a `null` here: both
+   * project from the same `list_channels()` snapshot inside a single
+   * call.
+   *
+   * Read-only; safe to call whether or not the node has been started.
+   */
+  getMaxSendable(): MaxSendableEstimate | null
   /**
    * Manually sync the RGS snapshot.
    *
