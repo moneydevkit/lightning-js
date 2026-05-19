@@ -342,13 +342,6 @@ impl ResolvedSpliceConfig {
   }
 }
 
-/// Default percentage buffer (in basis points) applied when the caller
-/// leaves `fee_buffer_bps` unset on [`MaxSendableConfig`]. 100 bps = 1 %.
-const DEFAULT_FEE_BUFFER_BPS: u16 = 100;
-/// Default floor (in sats) on the buffer when the caller leaves
-/// `fee_buffer_floor_sats` unset on [`MaxSendableConfig`].
-const DEFAULT_FEE_BUFFER_FLOOR_SATS: u64 = 10;
-
 /// Configuration for the max-sendable estimator. Subtracts a routing-fee
 /// buffer from the raw outbound liquidity so consumers don't try to spend
 /// `getBalance()` worth and watch it fail to route.
@@ -359,23 +352,34 @@ pub struct MaxSendableConfig {
   pub fee_buffer_bps: Option<u32>,
   /// Absolute lower bound on the buffer, in sats. Default: 10.
   pub fee_buffer_floor_sats: Option<i64>,
+  /// Fee budget multiplier in basis points of the cheapest route's
+  /// total fees (10_000 = 1.0x, 20_000 = 2.0x). Reserved so a send has
+  /// headroom to retry along a costlier path. Default: 11_000 (1.1x).
+  pub route_retry_fee_multiplier_bps: Option<u32>,
 }
 
 impl MaxSendableConfig {
   /// Resolve the napi-shaped optional/wider-typed config into the
-  /// `(bps, floor_sats)` pair that `max_sendable::compute_estimate`
-  /// consumes. Bad input from JS (negative floor, bps > `u16::MAX`)
-  /// gets clamped silently
-  fn resolve(&self) -> (u16, u64) {
-    let bps = self
-      .fee_buffer_bps
-      .map(|v| v.min(u16::MAX as u32) as u16)
-      .unwrap_or(DEFAULT_FEE_BUFFER_BPS);
-    let floor_sats = self
-      .fee_buffer_floor_sats
-      .map(|v| v.max(0) as u64)
-      .unwrap_or(DEFAULT_FEE_BUFFER_FLOOR_SATS);
-    (bps, floor_sats)
+  /// internal [`max_sendable::MaxSendableConfig`] consumed by
+  /// `compute_estimate`. Bad input from JS (negative floor, bps >
+  /// `u16::MAX`) gets clamped silently. Unset fields fall back to the
+  /// internal struct's `Default`.
+  fn resolve(&self) -> max_sendable::MaxSendableConfig {
+    let defaults = max_sendable::MaxSendableConfig::default();
+    max_sendable::MaxSendableConfig {
+      fee_buffer_bps: self
+        .fee_buffer_bps
+        .map(|v| v.min(u16::MAX as u32) as u16)
+        .unwrap_or(defaults.fee_buffer_bps),
+      fee_buffer_floor_sats: self
+        .fee_buffer_floor_sats
+        .map(|v| v.max(0) as u64)
+        .unwrap_or(defaults.fee_buffer_floor_sats),
+      route_retry_fee_multiplier_bps: self
+        .route_retry_fee_multiplier_bps
+        .map(|v| v.min(u16::MAX as u32) as u16)
+        .unwrap_or(defaults.route_retry_fee_multiplier_bps),
+    }
   }
 }
 
@@ -464,7 +468,7 @@ pub struct MdkNode {
   /// channels by counterparty.
   lsp_pubkey: PublicKey,
   splice_cfg: ResolvedSpliceConfig,
-  max_sendable_cfg: MaxSendableConfig,
+  max_sendable_cfg: max_sendable::MaxSendableConfig,
   /// One-worker tokio runtime dedicated to the splice manager.
   splice_runtime: Runtime,
   /// `Some` while a splice manager is running, `None` otherwise.
@@ -578,7 +582,7 @@ impl MdkNode {
       .map_err(|err| napi::Error::from_reason(err.to_string()))?;
 
     let splice_cfg = ResolvedSpliceConfig::from_options(options.splice);
-    let max_sendable_cfg = options.max_sendable.unwrap_or_default();
+    let max_sendable_cfg = options.max_sendable.unwrap_or_default().resolve();
 
     // One self-driving worker is enough; the manager sleeps between ticks.
     let splice_runtime = tokio::runtime::Builder::new_multi_thread()
@@ -956,8 +960,7 @@ impl MdkNode {
       .iter()
       .map(max_sendable::ChannelSnapshot::from)
       .collect();
-    let (bps, floor_sats) = self.max_sendable_cfg.resolve();
-    max_sendable::compute_estimate(&snaps, &self.lsp_pubkey, bps, floor_sats)
+    max_sendable::compute_estimate(&snaps, &self.lsp_pubkey, &self.max_sendable_cfg)
       .ok()
       .map(|e| MaxSendableEstimate {
         amount_msat: u64_to_i64(e.amount_msat),

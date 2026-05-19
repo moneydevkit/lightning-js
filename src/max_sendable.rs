@@ -11,6 +11,39 @@
 use ldk_node::ChannelDetails;
 use ldk_node::bitcoin::secp256k1::PublicKey;
 
+/// User-tunable buffers applied to the raw outbound liquidity (when
+/// no destination is supplied) or to a destination-aware route's
+/// computed fees, to reserve headroom for routing fees.
+#[derive(Debug, Clone)]
+pub(crate) struct MaxSendableConfig {
+  /// Percentage buffer in basis points (1 bps = 0.01 %), applied
+  /// to the outbound balance when no destination is supplied.
+  /// Default: 100 (1 %).
+  pub fee_buffer_bps: u16,
+  /// Absolute lower bound on the no-destination buffer, in sats.
+  /// Whichever of the percentage and the floor is larger wins.
+  /// Default: 10.
+  pub fee_buffer_floor_sats: u64,
+  /// Fee budget multiplier in basis points of the cheapest route's
+  /// computed `total_fees`, where 10_000 = 1.0x (no buffer) and
+  /// 20_000 = 2.0x. Reserved so a send has headroom to retry along
+  /// a more expensive path if the chosen route fails at payment
+  /// time. Larger values raise payment success rate at the cost of
+  /// a lower reported max sendable. Default: 11_000 (1.1x); bump
+  /// up if production retries surface "insufficient fee budget".
+  pub route_retry_fee_multiplier_bps: u16,
+}
+
+impl Default for MaxSendableConfig {
+  fn default() -> Self {
+    Self {
+      fee_buffer_bps: 100,
+      fee_buffer_floor_sats: 10,
+      route_retry_fee_multiplier_bps: 11_000,
+    }
+  }
+}
+
 /// A best-effort estimate of how much can flow out over Lightning
 /// right now, alongside the fee headroom the estimate carved out.
 #[derive(Debug, Clone)]
@@ -63,10 +96,34 @@ pub(crate) fn compute_estimate(
   fee_buffer_bps: u16,
   fee_buffer_floor_sats: u64,
 ) -> Result<MaxSendableEstimate, MaxSendableError> {
-  // `Option<u64>` accumulator distinguishes "no channel matched"
-  // (None → NoUsableChannel) from "channel(s) matched, sum is 0"
-  // (Some(0) → Ok with dust semantics).
-  let balance_msat = channels
+  let balance_msat = sum_outbound_balance(channels, lsp_pubkey)?;
+  Ok(subtract_fee_buffer(balance_msat, cfg))
+}
+
+/// Subtract the configured fee buffer from a known outbound balance.
+fn subtract_fee_buffer(balance_msat: u64, cfg: &MaxSendableConfig) -> MaxSendableEstimate {
+  // u128 intermediate dodges overflow at the percentage step. ppm
+  // basis-points × u64 msat fits in u128 trivially, and the divide
+  // brings it back into u64 range.
+  let pct_buffer = ((balance_msat as u128) * (cfg.fee_buffer_bps as u128) / 10_000) as u64;
+  let floor_buffer = cfg.fee_buffer_floor_sats.saturating_mul(1_000);
+  let buffer_msat = pct_buffer.max(floor_buffer);
+
+  MaxSendableEstimate {
+    amount_msat: balance_msat.saturating_sub(buffer_msat),
+    fee_budget_msat: buffer_msat,
+  }
+}
+
+/// Sum `next_outbound_htlc_limit_msat` over usable channels with
+/// the LSP. The `Option<u64>` accumulator distinguishes "no channel
+/// matched" (None → `NoUsableChannel`) from "channel(s) matched,
+/// sum is 0" (Some(0) → dust).
+fn sum_outbound_balance(
+  channels: &[ChannelSnapshot],
+  lsp_pubkey: &PublicKey,
+) -> Result<u64, MaxSendableError> {
+  channels
     .iter()
     .filter(|c| c.counterparty == *lsp_pubkey && c.is_usable)
     .fold(None::<u64>, |acc, c| {
@@ -89,15 +146,13 @@ pub(crate) fn compute_estimate(
     amount_msat: balance_msat.saturating_sub(buffer_msat),
     fee_budget_msat: buffer_msat,
   })
+    .ok_or(MaxSendableError::NoUsableChannel)
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
   use std::str::FromStr;
-
-  const BPS: u16 = 100;
-  const FLOOR: u64 = 10;
 
   fn lsp() -> PublicKey {
     PublicKey::from_str("0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798")
@@ -121,6 +176,8 @@ mod tests {
   fn no_usable_channel_when_empty() {
     let lsp = lsp();
     let res = compute_estimate(&[], &lsp, BPS, FLOOR);
+    let res = compute_estimate(&[], &lsp, &MaxSendableConfig::default());
+    let res = compute_estimate(&[], &lsp(), &MaxSendableConfig::default());
     assert!(matches!(res, Err(MaxSendableError::NoUsableChannel)));
   }
 
@@ -134,8 +191,7 @@ mod tests {
 
   #[test]
   fn no_usable_channel_when_lsp_channel_unusable() {
-    // Channel exists with the LSP but is mid-open or mid-splice
-    // — explicitly distinct from "balance is zero".
+    // Mid-open/splice — distinct from "balance is zero".
     let lsp = lsp();
     let chans = [snap(lsp, false, 100_000_000)];
     let res = compute_estimate(&chans, &lsp, BPS, FLOOR);
@@ -144,21 +200,18 @@ mod tests {
 
   #[test]
   fn dust_balance_below_floor_returns_zero() {
-    // 5 sats of outbound. Floor buffer is 10 sats → buffer wins,
-    // amount saturates to zero. The estimate is "you have
-    // liquidity, but it can't cover even the floor fee" — not an
-    // error.
+    // 5 sats < 10-sat floor → buffer wins, amount saturates to 0.
     let lsp = lsp();
     let chans = [snap(lsp, true, 5_000)]; // 5 sats
     let est = compute_estimate(&chans, &lsp, BPS, FLOOR).unwrap();
+    let chans = [snap(lsp, true, 5_000)];
+    let est = compute_estimate(&chans, &lsp, &MaxSendableConfig::default()).unwrap();
     assert_eq!(est.amount_msat, 0);
     assert_eq!(est.fee_budget_msat, 10_000); // 10-sat floor
   }
 
   #[test]
   fn balance_exactly_equals_buffer_returns_zero() {
-    // 10 sats balance, 10 sat floor → amount = 0 exactly,
-    // fee_budget = 10_000 msat.
     let lsp = lsp();
     let chans = [snap(lsp, true, 10_000)];
     let est = compute_estimate(&chans, &lsp, BPS, FLOOR).unwrap();
@@ -174,6 +227,10 @@ mod tests {
     let est = compute_estimate(&chans, &lsp, BPS, FLOOR).unwrap();
     assert_eq!(est.fee_budget_msat, 1_000_000); // 1000 sats
     assert_eq!(est.amount_msat, 99_000_000); // 99k sats
+    let chans = [snap(lsp, true, 100_000_000)];
+    let est = compute_estimate(&chans, &lsp, &MaxSendableConfig::default()).unwrap();
+    assert_eq!(est.fee_budget_msat, 1_000_000);
+    assert_eq!(est.amount_msat, 99_000_000);
   }
 
   #[test]
@@ -184,13 +241,15 @@ mod tests {
     let est = compute_estimate(&chans, &lsp, BPS, FLOOR).unwrap();
     assert_eq!(est.fee_budget_msat, 10_000); // 10-sat floor
     assert_eq!(est.amount_msat, 490_000); // 490 sats
+    let chans = [snap(lsp, true, 500_000)];
+    let est = compute_estimate(&chans, &lsp, &MaxSendableConfig::default()).unwrap();
+    assert_eq!(est.fee_budget_msat, 10_000);
+    assert_eq!(est.amount_msat, 490_000);
   }
 
   #[test]
   fn two_usable_lsp_channels_sum() {
-    // mdk does not bake in a single-channel assumption — if two
-    // usable LSP channels exist (rare but legal), their
-    // `next_outbound_htlc_limit_msat` values sum.
+    // No single-channel assumption: two usable LSP channels sum.
     let lsp = lsp();
     let chans = [
       snap(lsp, true, 50_000_000), // 50k sats
@@ -198,32 +257,43 @@ mod tests {
     ];
     let est = compute_estimate(&chans, &lsp, BPS, FLOOR).unwrap();
     assert_eq!(est.fee_budget_msat, 800_000); // 1% of 80k sats
+    let chans = [snap(lsp, true, 50_000_000), snap(lsp, true, 30_000_000)];
+    let est = compute_estimate(&chans, &lsp, &MaxSendableConfig::default()).unwrap();
+    assert_eq!(est.fee_budget_msat, 800_000);
     assert_eq!(est.amount_msat, 79_200_000);
   }
 
   #[test]
   fn mixed_channels_only_usable_lsp_contributes() {
-    // Only the usable LSP channel counts: non-LSP and
-    // unusable-LSP entries are filtered out.
+    // Non-LSP and unusable-LSP entries are filtered out.
     let lsp = lsp();
     let other = other_peer();
     let chans = [
-      snap(lsp, true, 10_000_000),   // counts
-      snap(other, true, 50_000_000), // wrong peer
-      snap(lsp, false, 100_000_000), // mid-open/splice
+      snap(lsp, true, 10_000_000),
+      snap(other, true, 50_000_000),
+      snap(lsp, false, 100_000_000),
     ];
     let est = compute_estimate(&chans, &lsp, BPS, FLOOR).unwrap();
     assert_eq!(est.fee_budget_msat, 100_000); // 1% of 10k sats
+    let est = compute_estimate(&chans, &lsp, &MaxSendableConfig::default()).unwrap();
+    assert_eq!(est.fee_budget_msat, 100_000);
     assert_eq!(est.amount_msat, 9_900_000);
   }
 
   #[test]
   fn overrides_take_effect() {
-    // Custom bps and floor flow through end-to-end. 200 bps = 2%.
     let lsp = lsp();
     let chans = [snap(lsp, true, 1_000_000_000)]; // 1M sats
     let est = compute_estimate(&chans, &lsp, 200, 50).unwrap();
     assert_eq!(est.fee_budget_msat, 20_000_000); // 2% of 1M sats = 20k sats
+    let chans = [snap(lsp, true, 1_000_000_000)];
+    let cfg = MaxSendableConfig {
+      fee_buffer_bps: 200,
+      fee_buffer_floor_sats: 50,
+      ..MaxSendableConfig::default()
+    };
+    let est = compute_estimate(&chans, &lsp, &cfg).unwrap();
+    assert_eq!(est.fee_budget_msat, 20_000_000); // 2% of 1M sats
     assert_eq!(est.amount_msat, 980_000_000);
   }
 }
