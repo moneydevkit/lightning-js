@@ -944,6 +944,9 @@ impl MdkNode {
   /// Best-effort estimate of the largest amount that can flow out over
   /// Lightning right now, with routing-fee headroom subtracted.
   ///
+  /// When `destination` is supplied, the fee budget comes from a real
+  /// `find_route` against that destination.
+  ///
   /// Returns `null` when no usable LSP channel exists. `Some(amountMsat: 0)`
   /// is distinct from `null` — it means a channel exists but the balance
   /// is fully consumed by the fee buffer (dust). Consumers should never
@@ -951,27 +954,68 @@ impl MdkNode {
   /// project from the same `list_channels()` snapshot inside a single
   /// call.
   ///
+  /// Throws `InvalidArg` when the destination cannot be parsed, dictates
+  /// its own amount (fixed-amount BOLT11/BOLT12), or carries no Lightning
+  /// method. Throws `GenericFailure` when routing fails outright.
+  ///
   /// Read-only; safe to call whether or not the node has been started.
   #[napi]
-  pub fn get_max_sendable(&self) -> Option<MaxSendableEstimate> {
+  pub fn get_max_sendable(
+    &self,
+    destination: Option<String>,
+  ) -> napi::Result<Option<MaxSendableEstimate>> {
+    let parsed = destination
+      .as_deref()
+      .map(|d| {
+        let resolver = HTTPHrnResolver::new();
+        let runtime = create_current_thread_runtime()?;
+        runtime
+          .block_on(PaymentInstructions::parse(d, self.network, &resolver, true))
+          .map_err(|err| {
+            napi::Error::new(
+              Status::InvalidArg,
+              format!("failed to parse destination: {err:?}"),
+            )
+          })
+      })
+      .transpose()?;
+
     let snaps: Vec<max_sendable::ChannelSnapshot> = self
       .node()
       .list_channels()
       .iter()
       .map(max_sendable::ChannelSnapshot::from)
       .collect();
-    max_sendable::compute_estimate(
-      None,
+
+    let result = max_sendable::compute_estimate(
+      parsed.as_ref(),
       &snaps,
       &self.lsp_pubkey,
       &self.max_sendable_cfg,
       |rp| self.node().find_route(rp).map_err(|e| format!("{e:?}")),
-    )
-    .ok()
-    .map(|e| MaxSendableEstimate {
-      amount_msat: u64_to_i64(e.amount_msat),
-      fee_budget_msat: u64_to_i64(e.fee_budget_msat),
-    })
+    );
+
+    match result {
+      Ok(e) => Ok(Some(MaxSendableEstimate {
+        amount_msat: u64_to_i64(e.amount_msat),
+        fee_budget_msat: u64_to_i64(e.fee_budget_msat),
+      })),
+      // Preserve the existing "channel not ready" → null contract so
+      // JS UIs don't have to re-handle the most common transient case.
+      Err(max_sendable::MaxSendableError::NoUsableChannel) => Ok(None),
+      Err(max_sendable::MaxSendableError::FixedAmount { amount_msat }) => Err(napi::Error::new(
+        Status::InvalidArg,
+        format!("destination is fixed-amount ({amount_msat}msat)"),
+      )),
+      Err(max_sendable::MaxSendableError::NoLightningMethod) => Err(napi::Error::new(
+        Status::InvalidArg,
+        "destination has no lightning method",
+      )),
+      Err(max_sendable::MaxSendableError::RoutingFailure(msg)) => Err(napi::Error::new(
+        Status::GenericFailure,
+        format!("no route: {msg}"),
+      )),
+    }
   }
 
   /// Manually sync the RGS snapshot.
