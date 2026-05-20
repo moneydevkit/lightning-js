@@ -960,12 +960,18 @@ impl MdkNode {
       .iter()
       .map(max_sendable::ChannelSnapshot::from)
       .collect();
-    max_sendable::compute_estimate(&snaps, &self.lsp_pubkey, &self.max_sendable_cfg)
-      .ok()
-      .map(|e| MaxSendableEstimate {
-        amount_msat: u64_to_i64(e.amount_msat),
-        fee_budget_msat: u64_to_i64(e.fee_budget_msat),
-      })
+    max_sendable::compute_estimate(
+      None,
+      &snaps,
+      &self.lsp_pubkey,
+      &self.max_sendable_cfg,
+      |rp| self.node().find_route(rp).map_err(|e| format!("{e:?}")),
+    )
+    .ok()
+    .map(|e| MaxSendableEstimate {
+      amount_msat: u64_to_i64(e.amount_msat),
+      fee_budget_msat: u64_to_i64(e.fee_budget_msat),
+    })
   }
 
   /// Manually sync the RGS snapshot.
