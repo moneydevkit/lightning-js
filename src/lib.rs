@@ -957,8 +957,6 @@ impl MdkNode {
   /// Throws `InvalidArg` when the destination cannot be parsed, dictates
   /// its own amount (fixed-amount BOLT11/BOLT12), or carries no Lightning
   /// method. Throws `GenericFailure` when routing fails outright.
-  ///
-  /// Read-only; safe to call whether or not the node has been started.
   #[napi]
   pub fn get_max_sendable(
     &self,
@@ -1899,7 +1897,7 @@ mod tests {
     }
 
     assert!(
-      offer.paths().len() > 0,
+      !offer.paths().is_empty(),
       "Offer should have at least one path!"
     );
   }

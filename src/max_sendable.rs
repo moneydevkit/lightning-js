@@ -113,25 +113,19 @@ impl From<&ChannelDetails> for ChannelSnapshot {
   }
 }
 
-/// Given a snapshot of channels, the LSP pubkey, and a buffer
-/// configuration, return the estimate.
+/// Top-level entry point. Picks an [`EstimationStrategy`] for
+/// `dest` and folds the result into a [`MaxSendableEstimate`].
+/// `find_route` is the only effect; everything else is pure
+/// dispatch. See the module-level coverage table.
 ///
 /// `Err(NoUsableChannel)` is returned only when no channel matches
 /// `counterparty == lsp_pubkey && is_usable`. A dust-level balance
 /// where the buffer eats everything yields `Ok(amount_msat: 0)` — the
 /// UI distinguishes "0 sats sendable" from "no channel yet".
-pub(crate) fn compute_estimate(
-/// Top-level entry point. Picks an [`EstimationStrategy`] for
-/// `dest` and folds the result into a [`MaxSendableEstimate`].
-/// `find_route` is the only effect; everything else is pure
-/// dispatch. See the module-level coverage table.
 pub(crate) fn compute_estimate<F>(
   dest: Option<&PaymentInstructions>,
   channels: &[ChannelSnapshot],
   lsp_pubkey: &PublicKey,
-  fee_buffer_bps: u16,
-  fee_buffer_floor_sats: u64,
-) -> Result<MaxSendableEstimate, MaxSendableError> {
   cfg: &MaxSendableConfig,
   find_route: F,
 ) -> Result<MaxSendableEstimate, MaxSendableError>
@@ -211,19 +205,6 @@ fn sum_outbound_balance(
           .saturating_add(c.next_outbound_htlc_limit_msat),
       )
     })
-    .ok_or(MaxSendableError::NoUsableChannel)?;
-
-  // u128 intermediate dodges overflow at the percentage step. ppm
-  // basis-points × u64 msat fits in u128 trivially, and the divide
-  // brings it back into u64 range.
-  let pct_buffer = ((balance_msat as u128) * (fee_buffer_bps as u128) / 10_000) as u64;
-  let floor_buffer = fee_buffer_floor_sats.saturating_mul(1_000);
-  let buffer_msat = pct_buffer.max(floor_buffer);
-
-  Ok(MaxSendableEstimate {
-    amount_msat: balance_msat.saturating_sub(buffer_msat),
-    fee_budget_msat: buffer_msat,
-  })
     .ok_or(MaxSendableError::NoUsableChannel)
 }
 
@@ -338,10 +319,6 @@ mod tests {
 
   #[test]
   fn no_usable_channel_when_empty() {
-    let lsp = lsp();
-    let res = compute_estimate(&[], &lsp, BPS, FLOOR);
-    let res = compute_estimate(&[], &lsp, &MaxSendableConfig::default());
-    let res = compute_estimate(&[], &lsp(), &MaxSendableConfig::default());
     let res = buffer_estimate(&[], &lsp(), &MaxSendableConfig::default());
     assert!(matches!(res, Err(MaxSendableError::NoUsableChannel)));
   }
@@ -350,8 +327,6 @@ mod tests {
   fn no_usable_channel_when_only_other_counterparty() {
     let lsp = lsp();
     let chans = [snap(other_peer(), true, 100_000_000)];
-    let res = compute_estimate(&chans, &lsp, BPS, FLOOR);
-    let res = compute_estimate(&chans, &lsp, &MaxSendableConfig::default());
     let res = buffer_estimate(&chans, &lsp, &MaxSendableConfig::default());
     assert!(matches!(res, Err(MaxSendableError::NoUsableChannel)));
   }
@@ -361,8 +336,6 @@ mod tests {
     // Mid-open/splice — distinct from "balance is zero".
     let lsp = lsp();
     let chans = [snap(lsp, false, 100_000_000)];
-    let res = compute_estimate(&chans, &lsp, BPS, FLOOR);
-    let res = compute_estimate(&chans, &lsp, &MaxSendableConfig::default());
     let res = buffer_estimate(&chans, &lsp, &MaxSendableConfig::default());
     assert!(matches!(res, Err(MaxSendableError::NoUsableChannel)));
   }
@@ -372,8 +345,6 @@ mod tests {
     // 5 sats < 10-sat floor → buffer wins, amount saturates to 0.
     let lsp = lsp();
     let chans = [snap(lsp, true, 5_000)]; // 5 sats
-    let est = compute_estimate(&chans, &lsp, BPS, FLOOR).unwrap();
-    let chans = [snap(lsp, true, 5_000)];
     let est = buffer_estimate(&chans, &lsp, &MaxSendableConfig::default()).unwrap();
     assert_eq!(est.amount_msat, 0);
     assert_eq!(est.fee_budget_msat, 10_000); // 10-sat floor
@@ -383,8 +354,6 @@ mod tests {
   fn balance_exactly_equals_buffer_returns_zero() {
     let lsp = lsp();
     let chans = [snap(lsp, true, 10_000)];
-    let est = compute_estimate(&chans, &lsp, BPS, FLOOR).unwrap();
-    let est = compute_estimate(&chans, &lsp, &MaxSendableConfig::default()).unwrap();
     let est = buffer_estimate(&chans, &lsp, &MaxSendableConfig::default()).unwrap();
     assert_eq!(est.amount_msat, 0);
     assert_eq!(est.fee_budget_msat, 10_000);
@@ -395,13 +364,9 @@ mod tests {
     // 100k sats × 1% = 1000 sats > 10-sat floor → percentage wins.
     let lsp = lsp();
     let chans = [snap(lsp, true, 100_000_000)]; // 100k sats
-    let est = compute_estimate(&chans, &lsp, BPS, FLOOR).unwrap();
+    let est = buffer_estimate(&chans, &lsp, &MaxSendableConfig::default()).unwrap();
     assert_eq!(est.fee_budget_msat, 1_000_000); // 1000 sats
     assert_eq!(est.amount_msat, 99_000_000); // 99k sats
-    let chans = [snap(lsp, true, 100_000_000)];
-    let est = buffer_estimate(&chans, &lsp, &MaxSendableConfig::default()).unwrap();
-    assert_eq!(est.fee_budget_msat, 1_000_000);
-    assert_eq!(est.amount_msat, 99_000_000);
   }
 
   #[test]
@@ -409,13 +374,9 @@ mod tests {
     // 500 sats × 1% = 5 sats < 10-sat floor → floor wins.
     let lsp = lsp();
     let chans = [snap(lsp, true, 500_000)]; // 500 sats
-    let est = compute_estimate(&chans, &lsp, BPS, FLOOR).unwrap();
+    let est = buffer_estimate(&chans, &lsp, &MaxSendableConfig::default()).unwrap();
     assert_eq!(est.fee_budget_msat, 10_000); // 10-sat floor
     assert_eq!(est.amount_msat, 490_000); // 490 sats
-    let chans = [snap(lsp, true, 500_000)];
-    let est = buffer_estimate(&chans, &lsp, &MaxSendableConfig::default()).unwrap();
-    assert_eq!(est.fee_budget_msat, 10_000);
-    assert_eq!(est.amount_msat, 490_000);
   }
 
   #[test]
@@ -426,11 +387,8 @@ mod tests {
       snap(lsp, true, 50_000_000), // 50k sats
       snap(lsp, true, 30_000_000), // 30k sats
     ];
-    let est = compute_estimate(&chans, &lsp, BPS, FLOOR).unwrap();
-    assert_eq!(est.fee_budget_msat, 800_000); // 1% of 80k sats
-    let chans = [snap(lsp, true, 50_000_000), snap(lsp, true, 30_000_000)];
     let est = buffer_estimate(&chans, &lsp, &MaxSendableConfig::default()).unwrap();
-    assert_eq!(est.fee_budget_msat, 800_000);
+    assert_eq!(est.fee_budget_msat, 800_000); // 1% of 80k sats
     assert_eq!(est.amount_msat, 79_200_000);
   }
 
@@ -444,11 +402,8 @@ mod tests {
       snap(other, true, 50_000_000),
       snap(lsp, false, 100_000_000),
     ];
-    let est = compute_estimate(&chans, &lsp, BPS, FLOOR).unwrap();
-    assert_eq!(est.fee_budget_msat, 100_000); // 1% of 10k sats
-    let est = compute_estimate(&chans, &lsp, &MaxSendableConfig::default()).unwrap();
     let est = buffer_estimate(&chans, &lsp, &MaxSendableConfig::default()).unwrap();
-    assert_eq!(est.fee_budget_msat, 100_000);
+    assert_eq!(est.fee_budget_msat, 100_000); // 1% of 10k sats
     assert_eq!(est.amount_msat, 9_900_000);
   }
 
@@ -456,16 +411,13 @@ mod tests {
   fn overrides_take_effect() {
     let lsp = lsp();
     let chans = [snap(lsp, true, 1_000_000_000)]; // 1M sats
-    let est = compute_estimate(&chans, &lsp, 200, 50).unwrap();
-    assert_eq!(est.fee_budget_msat, 20_000_000); // 2% of 1M sats = 20k sats
-    let chans = [snap(lsp, true, 1_000_000_000)];
     let cfg = MaxSendableConfig {
       fee_buffer_bps: 200,
       fee_buffer_floor_sats: 50,
       ..MaxSendableConfig::default()
     };
     let est = buffer_estimate(&chans, &lsp, &cfg).unwrap();
-    assert_eq!(est.fee_budget_msat, 20_000_000); // 2% of 1M sats
+    assert_eq!(est.fee_budget_msat, 20_000_000); // 2% of 1M sats = 20k sats
     assert_eq!(est.amount_msat, 980_000_000);
   }
 
