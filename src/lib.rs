@@ -342,13 +342,6 @@ impl ResolvedSpliceConfig {
   }
 }
 
-/// Default percentage buffer (in basis points) applied when the caller
-/// leaves `fee_buffer_bps` unset on [`MaxSendableConfig`]. 100 bps = 1 %.
-const DEFAULT_FEE_BUFFER_BPS: u16 = 100;
-/// Default floor (in sats) on the buffer when the caller leaves
-/// `fee_buffer_floor_sats` unset on [`MaxSendableConfig`].
-const DEFAULT_FEE_BUFFER_FLOOR_SATS: u64 = 10;
-
 /// Configuration for the max-sendable estimator. Subtracts a routing-fee
 /// buffer from the raw outbound liquidity so consumers don't try to spend
 /// `getBalance()` worth and watch it fail to route.
@@ -359,23 +352,34 @@ pub struct MaxSendableConfig {
   pub fee_buffer_bps: Option<u32>,
   /// Absolute lower bound on the buffer, in sats. Default: 10.
   pub fee_buffer_floor_sats: Option<i64>,
+  /// Fee budget multiplier in basis points of the cheapest route's
+  /// total fees (10_000 = 1.0x, 20_000 = 2.0x). Reserved so a send has
+  /// headroom to retry along a costlier path. Default: 11_000 (1.1x).
+  pub route_retry_fee_multiplier_bps: Option<u32>,
 }
 
 impl MaxSendableConfig {
   /// Resolve the napi-shaped optional/wider-typed config into the
-  /// `(bps, floor_sats)` pair that `max_sendable::compute_estimate`
-  /// consumes. Bad input from JS (negative floor, bps > `u16::MAX`)
-  /// gets clamped silently
-  fn resolve(&self) -> (u16, u64) {
-    let bps = self
-      .fee_buffer_bps
-      .map(|v| v.min(u16::MAX as u32) as u16)
-      .unwrap_or(DEFAULT_FEE_BUFFER_BPS);
-    let floor_sats = self
-      .fee_buffer_floor_sats
-      .map(|v| v.max(0) as u64)
-      .unwrap_or(DEFAULT_FEE_BUFFER_FLOOR_SATS);
-    (bps, floor_sats)
+  /// internal [`max_sendable::MaxSendableConfig`] consumed by
+  /// `compute_estimate`. Bad input from JS (negative floor, bps >
+  /// `u16::MAX`) gets clamped silently. Unset fields fall back to the
+  /// internal struct's `Default`.
+  fn resolve(&self) -> max_sendable::MaxSendableConfig {
+    let defaults = max_sendable::MaxSendableConfig::default();
+    max_sendable::MaxSendableConfig {
+      fee_buffer_bps: self
+        .fee_buffer_bps
+        .map(|v| v.min(u16::MAX as u32) as u16)
+        .unwrap_or(defaults.fee_buffer_bps),
+      fee_buffer_floor_sats: self
+        .fee_buffer_floor_sats
+        .map(|v| v.max(0) as u64)
+        .unwrap_or(defaults.fee_buffer_floor_sats),
+      route_retry_fee_multiplier_bps: self
+        .route_retry_fee_multiplier_bps
+        .map(|v| v.min(u16::MAX as u32) as u16)
+        .unwrap_or(defaults.route_retry_fee_multiplier_bps),
+    }
   }
 }
 
@@ -464,7 +468,7 @@ pub struct MdkNode {
   /// channels by counterparty.
   lsp_pubkey: PublicKey,
   splice_cfg: ResolvedSpliceConfig,
-  max_sendable_cfg: MaxSendableConfig,
+  max_sendable_cfg: max_sendable::MaxSendableConfig,
   /// One-worker tokio runtime dedicated to the splice manager.
   splice_runtime: Runtime,
   /// `Some` while a splice manager is running, `None` otherwise.
@@ -578,7 +582,7 @@ impl MdkNode {
       .map_err(|err| napi::Error::from_reason(err.to_string()))?;
 
     let splice_cfg = ResolvedSpliceConfig::from_options(options.splice);
-    let max_sendable_cfg = options.max_sendable.unwrap_or_default();
+    let max_sendable_cfg = options.max_sendable.unwrap_or_default().resolve();
 
     // One self-driving worker is enough; the manager sleeps between ticks.
     let splice_runtime = tokio::runtime::Builder::new_multi_thread()
@@ -940,6 +944,9 @@ impl MdkNode {
   /// Best-effort estimate of the largest amount that can flow out over
   /// Lightning right now, with routing-fee headroom subtracted.
   ///
+  /// When `destination` is supplied, the fee budget comes from a real
+  /// `find_route` against that destination.
+  ///
   /// Returns `null` when no usable LSP channel exists. `Some(amountMsat: 0)`
   /// is distinct from `null` — it means a channel exists but the balance
   /// is fully consumed by the fee buffer (dust). Consumers should never
@@ -947,22 +954,66 @@ impl MdkNode {
   /// project from the same `list_channels()` snapshot inside a single
   /// call.
   ///
-  /// Read-only; safe to call whether or not the node has been started.
+  /// Throws `InvalidArg` when the destination cannot be parsed, dictates
+  /// its own amount (fixed-amount BOLT11/BOLT12), or carries no Lightning
+  /// method. Throws `GenericFailure` when routing fails outright.
   #[napi]
-  pub fn get_max_sendable(&self) -> Option<MaxSendableEstimate> {
+  pub fn get_max_sendable(
+    &self,
+    destination: Option<String>,
+  ) -> napi::Result<Option<MaxSendableEstimate>> {
+    let parsed = destination
+      .as_deref()
+      .map(|d| {
+        let resolver = HTTPHrnResolver::new();
+        let runtime = create_current_thread_runtime()?;
+        runtime
+          .block_on(PaymentInstructions::parse(d, self.network, &resolver, true))
+          .map_err(|err| {
+            napi::Error::new(
+              Status::InvalidArg,
+              format!("failed to parse destination: {err:?}"),
+            )
+          })
+      })
+      .transpose()?;
+
     let snaps: Vec<max_sendable::ChannelSnapshot> = self
       .node()
       .list_channels()
       .iter()
       .map(max_sendable::ChannelSnapshot::from)
       .collect();
-    let (bps, floor_sats) = self.max_sendable_cfg.resolve();
-    max_sendable::compute_estimate(&snaps, &self.lsp_pubkey, bps, floor_sats)
-      .ok()
-      .map(|e| MaxSendableEstimate {
+
+    let result = max_sendable::compute_estimate(
+      parsed.as_ref(),
+      &snaps,
+      &self.lsp_pubkey,
+      &self.max_sendable_cfg,
+      |rp| self.node().find_route(rp).map_err(|e| format!("{e:?}")),
+    );
+
+    match result {
+      Ok(e) => Ok(Some(MaxSendableEstimate {
         amount_msat: u64_to_i64(e.amount_msat),
         fee_budget_msat: u64_to_i64(e.fee_budget_msat),
-      })
+      })),
+      // Preserve the existing "channel not ready" → null contract so
+      // JS UIs don't have to re-handle the most common transient case.
+      Err(max_sendable::MaxSendableError::NoUsableChannel) => Ok(None),
+      Err(max_sendable::MaxSendableError::FixedAmount { amount_msat }) => Err(napi::Error::new(
+        Status::InvalidArg,
+        format!("destination is fixed-amount ({amount_msat}msat)"),
+      )),
+      Err(max_sendable::MaxSendableError::NoLightningMethod) => Err(napi::Error::new(
+        Status::InvalidArg,
+        "destination has no lightning method",
+      )),
+      Err(max_sendable::MaxSendableError::RoutingFailure(msg)) => Err(napi::Error::new(
+        Status::GenericFailure,
+        format!("no route: {msg}"),
+      )),
+    }
   }
 
   /// Manually sync the RGS snapshot.
@@ -1846,7 +1897,7 @@ mod tests {
     }
 
     assert!(
-      offer.paths().len() > 0,
+      !offer.paths().is_empty(),
       "Offer should have at least one path!"
     );
   }
