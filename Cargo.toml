@@ -14,11 +14,11 @@ tikv-jemallocator = { version = "0.6", features = ["disable_initial_exec_tls"] }
 # Branch: https://github.com/moneydevkit/bitcoin-payment-instructions/tree/2025-12-ldk-node-base
 # Pinned to the same git rev as ldk-node's transitive pull to avoid duplicate
 # crate compilation. Verify with `cargo tree -d | grep bitcoin-payment-instructions`.
-bitcoin-payment-instructions = { git = "https://github.com/moneydevkit/bitcoin-payment-instructions", rev = "bc7d03f", default-features = false, features = [
+bitcoin-payment-instructions = { git = "https://github.com/moneydevkit/bitcoin-payment-instructions", rev = "bdcef061488bcc619142010a2a69cd49462d8843", default-features = false, features = [
   "http",
 ] }
 # Branch: https://github.com/moneydevkit/ldk-node/commits/lsp-0.7.0_accept-underpaying-htlcs_with_timing_logs
-ldk-node = { default-features = false, git = "https://github.com/moneydevkit/ldk-node.git", rev = "5616db4ed0db15534d6d92356fef8c5bad79acb1" }
+ldk-node = { default-features = false, git = "https://github.com/moneydevkit/ldk-node.git", rev = "f13fcead7e02ef4b77489a83854f204de11e902b" }
 #ldk-node = { path = "../ldk-node" }
 
 napi        = { version = "2", features = ["napi4"] }
