@@ -71,6 +71,16 @@ jobs:
             target: x86_64-unknown-linux-gnu
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian
             build: |
+              set -e
+              apt-get update
+              apt-get install -y lld
+              # The napi-rs image pre-sets TARGET_CC/TARGET_CXX to a custom gcc
+              # that does not understand `-fuse-ld=lld`, which aws-lc-sys passes
+              # unconditionally for x86_64. aws-lc-sys reads TARGET_CC ahead of
+              # CC_<target> and CC, so we unset it so CC=clang (already in the
+              # image) takes effect; clang supports -fuse-ld=lld with lld
+              # installed.
+              unset TARGET_CC TARGET_CXX TARGET_AR
               rustup install $RUST_VERSION
               rustup default $RUST_VERSION
               rustup target add x86_64-unknown-linux-gnu
@@ -94,7 +104,17 @@ jobs:
             build: |
               set -e
               apt-get update
-              apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+              apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross lld
+              # The napi-rs docker image pre-sets TARGET_CC and CFLAGS pointing
+              # to its custom cross-toolchain at /usr/aarch64-unknown-linux-gnu,
+              # whose sysroot lacks stdatomic.h. aws-lc-sys reads TARGET_CC
+              # ahead of CC_<target>, so unset both and re-export the Debian
+              # cross-toolchain values below.
+              unset TARGET_CC TARGET_CXX TARGET_AR
+              unset CFLAGS
+              unset CC_aarch64_unknown_linux_gnu
+              unset CXX_aarch64_unknown_linux_gnu
+              unset AR_aarch64_unknown_linux_gnu
               export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
               export CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
               export AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar
