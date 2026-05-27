@@ -7,6 +7,12 @@ system := env("NIX_SYSTEM")
 check:
     nix flake check
 
+# Run CI checks without Nix
+ci:
+    NIX_HARDENING_ENABLE="" cargo fmt -- --check
+    NIX_HARDENING_ENABLE="" cargo clippy --all-targets -- --deny warnings
+    NIX_HARDENING_ENABLE="" cargo test
+
 # Format code
 fmt:
     cargo fmt
