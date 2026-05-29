@@ -42,7 +42,7 @@ use ldk_node::{
     hashes::{Hash, sha256},
     secp256k1::PublicKey,
   },
-  config::{Config, EsploraSyncConfig},
+  config::Config,
   generate_entropy_mnemonic,
   lightning::ln::channelmanager::PaymentId,
   lightning::sign::{KeysManager as LdkKeysManager, NodeSigner, Recipient},
@@ -507,12 +507,7 @@ impl MdkNode {
 
     let mut builder = Builder::from_config(config);
     builder.set_network(network);
-    // Disable background wallet syncing. These nodes are intended to be short
-    // lived and are kept in sync via other means.
-    let esplora_sync_config = EsploraSyncConfig {
-      background_sync_config: None,
-    };
-    builder.set_chain_source_esplora(options.esplora_url, Some(esplora_sync_config));
+    builder.set_chain_source_esplora(options.esplora_url, None);
     builder.set_gossip_source_rgs(options.rgs_url);
     builder.set_entropy_bip39_mnemonic(mnemonic, None);
     let logger_arc = Arc::clone(logger_instance());
