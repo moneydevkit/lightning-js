@@ -26,7 +26,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   lint:
-    name: Lint
+    name: CI
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -45,14 +45,13 @@ jobs:
       - name: Install dependencies
         run: yarn install
 
-      - name: Oxlint
-        run: yarn lint
+      - name: Install just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
 
-      - name: Cargo fmt
-        run: cargo fmt -- --check
-
-      - name: Clippy
-        run: cargo clippy
+      - name: Check
+        run: just ci
   build:
     strategy:
       fail-fast: false
