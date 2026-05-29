@@ -679,6 +679,7 @@ impl MdkNode {
   ///
   /// If `splice.enabled` is set on construction (the default), also spawns
   /// the auto-splice background task on the dedicated splice runtime.
+  /// Start the node. Call once before polling for events.
   #[napi]
   pub fn start_receiving(&self) -> napi::Result<()> {
     self.node().start().map_err(|e| {
@@ -708,6 +709,7 @@ impl MdkNode {
     }
 
     Ok(())
+    })
   }
 
   /// Get the next payment event without ACKing it.
@@ -1050,11 +1052,6 @@ impl MdkNode {
       return received_payments;
     }
 
-    if let Err(err) = self.node().sync_wallets() {
-      eprintln!("[lightning-js] Failed to sync wallets: {err}");
-      panic!("failed to sync wallets: {err}");
-    }
-
     let start_sync_at = std::time::Instant::now();
     let mut last_event_time = start_sync_at;
 
@@ -1180,10 +1177,6 @@ impl MdkNode {
     if let Err(err) = self.node().start() {
       eprintln!("[lightning-js] Failed to start node for get_invoice: {err}");
       panic!("failed to start node for get_invoice: {err}");
-    }
-    if let Err(err) = self.node().sync_wallets() {
-      eprintln!("[lightning-js] Failed to sync wallets: {err}");
-      panic!("failed to sync wallets: {err}");
     }
 
     let result = self.get_invoice_impl(Some(amount), description, expiry_secs);
@@ -1486,15 +1479,6 @@ impl MdkNode {
     self.node().start().map_err(|e| {
       napi::Error::new(Status::GenericFailure, format!("failed to start node: {e}"))
     })?;
-
-    // Sync wallets
-    if let Err(e) = self.node().sync_wallets() {
-      let _ = self.node().stop();
-      return Err(napi::Error::new(
-        Status::GenericFailure,
-        format!("failed to sync wallets: {e}"),
-      ));
-    }
 
     let result = self.execute_payment_impl(&payment_target, wait_secs);
     let _ = self.node().stop();
