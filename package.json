@@ -31,24 +31,11 @@
     "@taplo/cli": "^0.7.0",
     "ava": "^6.2.0",
     "chalk": "^5.4.1",
-    "husky": "^9.1.7",
-    "lint-staged": "^16.0.0",
     "npm-run-all2": "^8.0.0",
     "oxlint": "^0.17.0",
     "prettier": "^3.5.3",
     "tinybench": "^4.0.1",
     "typescript": "^5.8.2"
-  },
-  "lint-staged": {
-    "*.@(js|ts|tsx)": [
-      "oxlint --fix"
-    ],
-    "*.@(js|ts|tsx|yml|yaml|md|json)": [
-      "prettier --write"
-    ],
-    "*.toml": [
-      "taplo format"
-    ]
   },
   "engines": {
     "node": ">= 10"
@@ -67,8 +54,7 @@
     "format:rs": "cargo fmt",
     "lint": "oxlint .",
     "prepublishOnly": "napi prepublish -t npm",
-    "version": "napi version",
-    "prepare": "husky"
+    "version": "napi version"
   },
   "prettier": {
     "printWidth": 120,
