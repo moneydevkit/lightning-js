@@ -513,7 +513,9 @@ impl MdkNode {
     let logger_arc = Arc::clone(logger_instance());
     let logger: Arc<dyn LogWriter> = logger_arc;
     builder.set_custom_logger(logger);
-    builder.set_liquidity_source_lsps4(lsp_node_id, lsp_address);
+    // Third arg is the optional LSPS4 fee_claim (added in ldk-node #37). None
+    // preserves prior behavior (no fee claim configured).
+    builder.set_liquidity_source_lsps4(lsp_node_id, lsp_address, None);
 
     if let Some(scoring) = options.scoring_param_overrides {
       let mut fee_params = ProbabilisticScoringFeeParameters::default();
