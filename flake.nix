@@ -28,19 +28,14 @@
 
         fenixPkgs = fenix.packages.${localSystem};
 
-        # Crane needs cargo >= 1.91 (`cargo package --exclude-lockfile`).
-        # Cargo.toml's `rust-version = "1.85"` remains the MSRV for downstream
-        # consumers; this toolchain is only for the dev shell and CI checks.
-        rustToolchain = fenixPkgs.combine [
-          (fenixPkgs.stable.withComponents [
-            "cargo"
-            "clippy"
-            "rust-src"
-            "rustc"
-            "rustfmt"
-          ])
-          fenixPkgs.stable.rust-analyzer
-        ];
+        # Pinned by rust-toolchain.toml so the dev shell runs the exact
+        # toolchain CI lints with; see the comment there. The sha256 pins the
+        # channel's component set and must be bumped together with the
+        # channel (build once with lib.fakeSha256 to learn the new one).
+        rustToolchain = fenixPkgs.fromToolchainFile {
+          file = ./rust-toolchain.toml;
+          sha256 = "sha256-OATSZm98Es5kIFuqaba+UvkQtFsVgJEBMmS+t6od5/U=";
+        };
 
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
         src = craneLib.cleanCargoSource ./.;
@@ -72,6 +67,12 @@
 
         devShells.default = pkgs.mkShell {
           name = "lightning-js-dev";
+
+          # Nix's fortify hardening breaks tikv-jemalloc-sys debug builds: the
+          # wrapper injects _FORTIFY_SOURCE, cargo passes -O0, glibc emits a
+          # #warning, and jemalloc's -Werror configure probes all fail
+          # ("cannot determine return type of strerror_r").
+          hardeningDisable = [ "fortify" ];
 
           packages = with pkgs; [
             nodejs_22

@@ -37,10 +37,11 @@ jobs:
           node-version: 22
           cache: 'yarn'
 
-      - name: Install
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
+      # Reads rust-toolchain.toml (version and components), the same pin the
+      # nix dev shell builds from — a floating stable here once linted code
+      # the dev shell's clippy had never seen.
+      - name: Install Rust from rust-toolchain.toml
+        run: rustup toolchain install
 
       - name: Install dependencies
         run: yarn install

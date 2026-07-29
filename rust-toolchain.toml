@@ -1,0 +1,9 @@
+# Single source of truth for the dev-shell and CI-check toolchain: the flake
+# reads this via fenix fromToolchainFile and rustup reads it natively in CI,
+# so the two cannot drift (a floating CI "stable" once linted code the dev
+# shell's clippy had never seen). Cargo.toml's `rust-version = "1.85"` stays
+# the MSRV for downstream consumers; the napi release builds pin their own
+# RUST_VERSION in CI.yml.
+[toolchain]
+channel = "1.97.0"
+components = ["clippy", "rustfmt", "rust-src", "rust-analyzer"]
