@@ -303,6 +303,7 @@ pub struct MdkNodeOptions {
   pub scoring_param_overrides: Option<ScoringParamOverrides>,
   pub splice: Option<SpliceConfig>,
   pub max_sendable: Option<MaxSendableConfig>,
+  pub fee_claim: Option<String>,
 }
 
 /// Configuration for the auto-splice manager. The manager wakes up every
@@ -513,9 +514,7 @@ impl MdkNode {
     let logger_arc = Arc::clone(logger_instance());
     let logger: Arc<dyn LogWriter> = logger_arc;
     builder.set_custom_logger(logger);
-    // Third arg is the optional LSPS4 fee_claim (added in ldk-node #37). None
-    // preserves prior behavior (no fee claim configured).
-    builder.set_liquidity_source_lsps4(lsp_node_id, lsp_address, None);
+    builder.set_liquidity_source_lsps4(lsp_node_id, lsp_address, options.fee_claim.clone());
 
     if let Some(scoring) = options.scoring_param_overrides {
       let mut fee_params = ProbabilisticScoringFeeParameters::default();

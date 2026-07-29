@@ -39,6 +39,7 @@ export interface MdkNodeOptions {
   scoringParamOverrides?: ScoringParamOverrides
   splice?: SpliceConfig
   maxSendable?: MaxSendableConfig
+  feeClaim?: string
 }
 /**
  * Configuration for the auto-splice manager. The manager wakes up every
@@ -155,6 +156,7 @@ export declare class MdkNode {
    *
    * If `splice.enabled` is set on construction (the default), also spawns
    * the auto-splice background task on the dedicated splice runtime.
+   * Start the node. Call once before polling for events.
    */
   startReceiving(): void
   /**
@@ -188,10 +190,7 @@ export declare class MdkNode {
    * Lightning right now, with routing-fee headroom subtracted.
    *
    * When `destination` is supplied, the fee budget comes from a real
-   * `find_route` against that destination (currently zero-amount BOLT11
-   * only). BOLT12, LNURL-pay, and HRN destinations parse but fall back
-   * to the destination-agnostic buffer until invoice/HRN resolution
-   * moves into the estimator.
+   * `find_route` against that destination.
    *
    * Returns `null` when no usable LSP channel exists. `Some(amountMsat: 0)`
    * is distinct from `null` — it means a channel exists but the balance
@@ -203,8 +202,6 @@ export declare class MdkNode {
    * Throws `InvalidArg` when the destination cannot be parsed, dictates
    * its own amount (fixed-amount BOLT11/BOLT12), or carries no Lightning
    * method. Throws `GenericFailure` when routing fails outright.
-   *
-   * Read-only; safe to call whether or not the node has been started.
    */
   getMaxSendable(destination?: string | undefined | null): MaxSendableEstimate | null
   /**
