@@ -303,6 +303,7 @@ pub struct MdkNodeOptions {
   pub scoring_param_overrides: Option<ScoringParamOverrides>,
   pub splice: Option<SpliceConfig>,
   pub max_sendable: Option<MaxSendableConfig>,
+  pub fee_claim: Option<String>,
 }
 
 /// Configuration for the auto-splice manager. The manager wakes up every
@@ -513,9 +514,7 @@ impl MdkNode {
     let logger_arc = Arc::clone(logger_instance());
     let logger: Arc<dyn LogWriter> = logger_arc;
     builder.set_custom_logger(logger);
-    // Third arg is the optional LSPS4 fee_claim (added in ldk-node #37). None
-    // preserves prior behavior (no fee claim configured).
-    builder.set_liquidity_source_lsps4(lsp_node_id, lsp_address, None);
+    builder.set_liquidity_source_lsps4(lsp_node_id, lsp_address, options.fee_claim.clone());
 
     if let Some(scoring) = options.scoring_param_overrides {
       let mut fee_params = ProbabilisticScoringFeeParameters::default();
@@ -719,95 +718,87 @@ impl MdkNode {
   #[napi]
   pub fn next_event(&self) -> Option<PaymentEvent> {
     loop {
-      match self.node().next_event() {
-        Some(event) => {
-          let payment_event = match &event {
-            Event::PaymentClaimable {
-              payment_hash,
-              claimable_amount_msat,
-              ..
-            } => Some(PaymentEvent {
-              event_type: PaymentEventType::Claimable,
-              payment_hash: bytes_to_hex(&payment_hash.0),
-              amount_msat: Some(*claimable_amount_msat as i64),
-              reason: None,
-              payer_note: None,
-              payment_id: None,
-              preimage: None,
-            }),
-            Event::PaymentReceived {
-              payment_id,
-              payment_hash,
-              amount_msat,
-              ..
-            } => {
-              let payer_note = payment_id.and_then(|pid| {
-                self
-                  .node()
-                  .payment(&pid)
-                  .and_then(|details| match details.kind {
-                    PaymentKind::Bolt12Offer { payer_note, .. } => {
-                      payer_note.map(|n| n.to_string())
-                    }
-                    PaymentKind::Bolt12Refund { payer_note, .. } => {
-                      payer_note.map(|n| n.to_string())
-                    }
-                    _ => None,
-                  })
-              });
-              Some(PaymentEvent {
-                event_type: PaymentEventType::Received,
-                payment_hash: bytes_to_hex(&payment_hash.0),
-                amount_msat: Some(*amount_msat as i64),
-                reason: None,
-                payer_note,
-                payment_id: None,
-                preimage: None,
+      let event = self.node().next_event()?;
+      let payment_event = match &event {
+        Event::PaymentClaimable {
+          payment_hash,
+          claimable_amount_msat,
+          ..
+        } => Some(PaymentEvent {
+          event_type: PaymentEventType::Claimable,
+          payment_hash: bytes_to_hex(&payment_hash.0),
+          amount_msat: Some(*claimable_amount_msat as i64),
+          reason: None,
+          payer_note: None,
+          payment_id: None,
+          preimage: None,
+        }),
+        Event::PaymentReceived {
+          payment_id,
+          payment_hash,
+          amount_msat,
+          ..
+        } => {
+          let payer_note = payment_id.and_then(|pid| {
+            self
+              .node()
+              .payment(&pid)
+              .and_then(|details| match details.kind {
+                PaymentKind::Bolt12Offer { payer_note, .. } => payer_note.map(|n| n.to_string()),
+                PaymentKind::Bolt12Refund { payer_note, .. } => payer_note.map(|n| n.to_string()),
+                _ => None,
               })
-            }
-            Event::PaymentFailed {
-              payment_id: event_pid,
-              payment_hash,
-              reason,
-              ..
-            } => payment_hash.map(|h| PaymentEvent {
-              event_type: PaymentEventType::Failed,
-              payment_hash: bytes_to_hex(&h.0),
-              amount_msat: None,
-              reason: reason.map(|r| format!("{r:?}")),
-              payer_note: None,
-              payment_id: event_pid.map(|id| bytes_to_hex(&id.0)),
-              preimage: None,
-            }),
-            Event::PaymentSuccessful {
-              payment_id: event_pid,
-              payment_hash,
-              payment_preimage,
-              ..
-            } => Some(PaymentEvent {
-              event_type: PaymentEventType::Sent,
-              payment_hash: bytes_to_hex(&payment_hash.0),
-              amount_msat: None,
-              reason: None,
-              payer_note: None,
-              payment_id: event_pid.map(|id| bytes_to_hex(&id.0)),
-              preimage: payment_preimage.map(|p| bytes_to_hex(&p.0)),
-            }),
-            _ => None,
-          };
-
-          // If this is a payment event we care about, return it (without ACKing)
-          if payment_event.is_some() {
-            return payment_event;
-          }
-
-          // For non-payment events, ACK and continue to next event
-          // Potentially problematic if a payout is happening at the same time
-          // but this is the existing behavior.
-          let _ = self.node().event_handled();
+          });
+          Some(PaymentEvent {
+            event_type: PaymentEventType::Received,
+            payment_hash: bytes_to_hex(&payment_hash.0),
+            amount_msat: Some(*amount_msat as i64),
+            reason: None,
+            payer_note,
+            payment_id: None,
+            preimage: None,
+          })
         }
-        None => return None,
+        Event::PaymentFailed {
+          payment_id: event_pid,
+          payment_hash,
+          reason,
+          ..
+        } => payment_hash.map(|h| PaymentEvent {
+          event_type: PaymentEventType::Failed,
+          payment_hash: bytes_to_hex(&h.0),
+          amount_msat: None,
+          reason: reason.map(|r| format!("{r:?}")),
+          payer_note: None,
+          payment_id: event_pid.map(|id| bytes_to_hex(&id.0)),
+          preimage: None,
+        }),
+        Event::PaymentSuccessful {
+          payment_id: event_pid,
+          payment_hash,
+          payment_preimage,
+          ..
+        } => Some(PaymentEvent {
+          event_type: PaymentEventType::Sent,
+          payment_hash: bytes_to_hex(&payment_hash.0),
+          amount_msat: None,
+          reason: None,
+          payer_note: None,
+          payment_id: event_pid.map(|id| bytes_to_hex(&id.0)),
+          preimage: payment_preimage.map(|p| bytes_to_hex(&p.0)),
+        }),
+        _ => None,
+      };
+
+      // If this is a payment event we care about, return it (without ACKing)
+      if payment_event.is_some() {
+        return payment_event;
       }
+
+      // For non-payment events, ACK and continue to next event
+      // Potentially problematic if a payout is happening at the same time
+      // but this is the existing behavior.
+      let _ = self.node().event_handled();
     }
   }
 
