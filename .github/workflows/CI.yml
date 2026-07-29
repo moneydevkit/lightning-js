@@ -188,6 +188,7 @@ jobs:
           docker run --rm \
             --user 0:0 \
             -e RUST_VERSION=${{ env.RUST_VERSION }} \
+            -e RUSTUP_TOOLCHAIN=${{ env.RUST_VERSION }} \
             -v /tmp/build.sh:/tmp/build.sh \
             -v ${{ github.workspace }}/.cargo-cache/git/db:/usr/local/cargo/git/db \
             -v ${{ github.workspace }}/.cargo/registry/cache:/usr/local/cargo/registry/cache \
@@ -196,10 +197,15 @@ jobs:
             -w /build \
             ${{ matrix.settings.docker }} \
             sh /tmp/build.sh
+      # RUSTUP_TOOLCHAIN outranks rust-toolchain.toml's directory override,
+      # which would otherwise hijack these release builds onto the lint
+      # toolchain (whose cross-targets are not installed).
       - name: Build
         run: ${{ matrix.settings.build }}
         if: ${{ !matrix.settings.docker }}
         shell: bash
+        env:
+          RUSTUP_TOOLCHAIN: ${{ env.RUST_VERSION }}
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
