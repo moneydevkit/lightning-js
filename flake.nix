@@ -2,7 +2,7 @@
   description = "Lightning JS";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     crane.url = "github:ipetkov/crane";
     flake-utils.url = "github:numtide/flake-utils";
 
@@ -34,7 +34,7 @@
         # channel (build once with lib.fakeSha256 to learn the new one).
         rustToolchain = fenixPkgs.fromToolchainFile {
           file = ./rust-toolchain.toml;
-          sha256 = "sha256-OATSZm98Es5kIFuqaba+UvkQtFsVgJEBMmS+t6od5/U=";
+          sha256 = "sha256-A1abGIbOtcBSdrUMhDGrER3pRM1hQP4fp9gh3Y4PKc8=";
         };
 
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
