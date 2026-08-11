@@ -7,5 +7,5 @@
 # directory override; without that they would silently build under this
 # toolchain with no cross-targets installed.
 [toolchain]
-channel = "1.97.0"
+channel = "1.97.1"
 components = ["clippy", "rustfmt", "rust-src", "rust-analyzer"]
